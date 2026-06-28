@@ -5,6 +5,17 @@ from datetime import datetime
 
 DB_NAME = "alerts.db"
 
+# ============================================================
+# [BARU] TOLERANSI AKURASI
+# ------------------------------------------------------------
+# Selisih |skor_sistem - skor_engineer| <= TOLERANSI dianggap COCOK.
+# Alasan: skor urgensi bersifat ORDINAL (1-10), sehingga selisih 1 poin
+# (mis. 9 vs 8) praktis berada pada level urgensi yang sama. Ubah nilai di
+# sini bila pembimbing meminta toleransi berbeda.
+# ============================================================
+ACCURACY_TOLERANCE = 1
+
+
 def get_connection():
     """Mendapatkan koneksi ke database SQLite."""
     return sqlite3.connect(DB_NAME)
@@ -166,14 +177,17 @@ def get_all_alerts(limit=1000, offset=0, stream_filter=None, level_filter=None):
     return df
 
 def get_alert_stats():
-    """Mendapatkan statistik dari database."""
+    """Mendapatkan statistik dari database.
+    [DIPERBAIKI] Distribusi & rata-rata skor dihitung HANYA dari alert yang
+    sudah diproses (is_processed = 1), agar baris mentah (skor 0) tidak
+    mengotori rata-rata. 'total' tetap menghitung seluruh baris di DB."""
     conn = get_connection()
-    
+
     total = pd.read_sql_query("SELECT COUNT(*) as count FROM alerts", conn).iloc[0]['count']
-    stream_dist = pd.read_sql_query("SELECT stream, COUNT(*) as count FROM alerts GROUP BY stream", conn)
-    level_dist = pd.read_sql_query("SELECT level, COUNT(*) as count FROM alerts GROUP BY level", conn)
-    avg_score = pd.read_sql_query("SELECT AVG(score) as avg FROM alerts", conn).iloc[0]['avg']
-    
+    stream_dist = pd.read_sql_query("SELECT stream, COUNT(*) as count FROM alerts WHERE is_processed = 1 GROUP BY stream", conn)
+    level_dist = pd.read_sql_query("SELECT level, COUNT(*) as count FROM alerts WHERE is_processed = 1 GROUP BY level", conn)
+    avg_score = pd.read_sql_query("SELECT AVG(score) as avg FROM alerts WHERE is_processed = 1", conn).iloc[0]['avg']
+
     conn.close()
     return {
         'total': total,
@@ -182,15 +196,32 @@ def get_alert_stats():
         'avg_score': avg_score if avg_score else 0
     }
 
+# --- VERSI LAMA (ARSIP) get_alert_stats --------------------------------------
+# def get_alert_stats():
+#     conn = get_connection()
+#     total = pd.read_sql_query("SELECT COUNT(*) as count FROM alerts", conn).iloc[0]['count']
+#     stream_dist = pd.read_sql_query("SELECT stream, COUNT(*) as count FROM alerts GROUP BY stream", conn)
+#     level_dist = pd.read_sql_query("SELECT level, COUNT(*) as count FROM alerts GROUP BY level", conn)
+#     avg_score = pd.read_sql_query("SELECT AVG(score) as avg FROM alerts", conn).iloc[0]['avg']  # ikut baris mentah
+#     conn.close()
+#     return {'total': total, 'stream_dist': stream_dist, 'level_dist': level_dist,
+#             'avg_score': avg_score if avg_score else 0}
+# -----------------------------------------------------------------------------
+
 # ============================================================
 # 🎯 FUNGSI UTAMA UNTUK BAB IV (PERHITUNGAN AKURASI)
 # ============================================================
 
 def calculate_accuracy() -> dict:
     """
-    Menghitung Akurasi sistem dengan membandingkan 'score' (sistem) 
-    dengan 'expected_score' (engineer / ground truth).
-    Ini adalah inti dari pengujian di BAB IV.
+    [DIPERBARUI] Menghitung Akurasi dengan TOLERANSI +/- ACCURACY_TOLERANCE.
+
+    Skor urgensi bersifat ordinal, sehingga selisih 1 poin (mis. 9 vs 8) masih
+    dianggap cocok. Fungsi ini mengembalikan:
+      - accuracy / correct        : akurasi utama (toleransi +/-1)  <-- dipakai UI
+      - exact_accuracy / exact_*  : akurasi "tepat sama persis" (pembanding)
+    Kunci lama (total_data, correct, accuracy, message) tetap ada agar app.py &
+    chatbot.py tidak rusak.
     """
     conn = get_connection()
     
@@ -209,35 +240,67 @@ def calculate_accuracy() -> dict:
             'total_data': 0,
             'correct': 0,
             'accuracy': 0.0,
+            'exact_correct': 0,
+            'exact_accuracy': 0.0,
+            'tolerance': ACCURACY_TOLERANCE,
             'message': 'Belum ada data uji dengan expected_score.'
         }
     
-    # Hitung berapa yang cocok (score == expected_score)
-    df['match'] = df['score'] == df['expected_score']
-    correct = df['match'].sum()
-    accuracy = (correct / total) * 100
+    # Selisih absolut antara skor sistem dan skor engineer
+    selisih = (df['score'] - df['expected_score']).abs()
+
+    # Cocok dengan toleransi (metrik utama) dan cocok tepat sama (pembanding)
+    tol_match = selisih <= ACCURACY_TOLERANCE
+    exact_match = selisih == 0
+
+    correct = int(tol_match.sum())
+    exact_correct = int(exact_match.sum())
+    accuracy = round(correct / total * 100, 2)
+    exact_accuracy = round(exact_correct / total * 100, 2)
     
     return {
         'total_data': total,
-        'correct': int(correct),
-        'accuracy': round(accuracy, 2),
-        'message': f'Akurasi: {accuracy:.2f}% ({correct}/{total})'
+        'correct': correct,                 # cocok (toleransi +/-1)
+        'accuracy': accuracy,               # akurasi utama (toleransi +/-1)
+        'exact_correct': exact_correct,     # cocok tepat sama
+        'exact_accuracy': exact_accuracy,   # akurasi tepat sama (pembanding)
+        'tolerance': ACCURACY_TOLERANCE,
+        'message': (f'Akurasi (toleransi \u00b1{ACCURACY_TOLERANCE}): {accuracy}% ({correct}/{total}) | '
+                    f'Tepat sama: {exact_accuracy}% ({exact_correct}/{total})')
     }
+
+# --- VERSI LAMA (ARSIP) calculate_accuracy -----------------------------------
+# def calculate_accuracy():
+#     conn = get_connection()
+#     query = "SELECT id, score, expected_score FROM alerts WHERE is_processed = 1 AND expected_score IS NOT NULL"
+#     df = pd.read_sql_query(query, conn); conn.close()
+#     total = len(df)
+#     if total == 0:
+#         return {'total_data': 0, 'correct': 0, 'accuracy': 0.0,
+#                 'message': 'Belum ada data uji dengan expected_score.'}
+#     df['match'] = df['score'] == df['expected_score']   # <-- harus sama PERSIS (terlalu kaku)
+#     correct = df['match'].sum()
+#     accuracy = (correct / total) * 100
+#     return {'total_data': total, 'correct': int(correct), 'accuracy': round(accuracy, 2),
+#             'message': f'Akurasi: {accuracy:.2f}% ({correct}/{total})'}
+# -----------------------------------------------------------------------------
 
 def get_confusion_matrix_data() -> pd.DataFrame:
     """
-    Mengembalikan DataFrame untuk membuat Confusion Matrix di BAB IV.
-    Menampilkan perbandingan Skor Sistem vs Skor Engineer per ID.
+    [DIPERBARUI] Mengembalikan DataFrame untuk Confusion Matrix di BAB IV.
+    Status 'Cocok' kini memakai TOLERANSI +/- ACCURACY_TOLERANCE agar konsisten
+    dengan calculate_accuracy(). Ditambahkan kolom 'selisih'.
     """
     conn = get_connection()
-    query = """
+    query = f"""
         SELECT 
             id, 
             stream, 
             score as skor_sistem, 
             expected_score as skor_engineer,
+            ABS(score - expected_score) as selisih,
             CASE 
-                WHEN score = expected_score THEN '✅ Cocok' 
+                WHEN ABS(score - expected_score) <= {ACCURACY_TOLERANCE} THEN '✅ Cocok' 
                 ELSE '❌ Tidak Cocok' 
             END as status
         FROM alerts 
@@ -247,6 +310,17 @@ def get_confusion_matrix_data() -> pd.DataFrame:
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
+
+# --- VERSI LAMA (ARSIP) get_confusion_matrix_data ----------------------------
+# def get_confusion_matrix_data():
+#     conn = get_connection()
+#     query = """
+#         SELECT id, stream, score as skor_sistem, expected_score as skor_engineer,
+#             CASE WHEN score = expected_score THEN '✅ Cocok' ELSE '❌ Tidak Cocok' END as status
+#         FROM alerts WHERE is_processed = 1 AND expected_score IS NOT NULL ORDER BY id
+#     """
+#     df = pd.read_sql_query(query, conn); conn.close(); return df
+# -----------------------------------------------------------------------------
 
 # ============================================================
 # FUNGSI UTILITY LAINNYA
@@ -293,3 +367,4 @@ if __name__ == "__main__":
     init_database()
     print("✅ Database siap digunakan.")
     print(f"📊 Total alert belum diproses: {count_unprocessed()}")
+    print(f"🎯 Toleransi akurasi yang dipakai: \u00b1{ACCURACY_TOLERANCE}")

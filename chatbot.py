@@ -1,10 +1,17 @@
 """
 chatbot.py
 Lapisan chatbot: mendeteksi MAKSUD (intent) pertanyaan analis, lalu menjawab
-dengan penjelasan. Mengadaptasi konsep "tipe kalimat input" dari Priandana &
-Indra (2024) ke 8 tipe pertanyaan OCC (Termasuk Tipe 8: Akurasi).
+dengan penjelasan. Mengadaptasi (dengan modifikasi) konsep "tipe kalimat input"
+dari Priandana & Indra (2024) ke 8 tipe pertanyaan OCC (termasuk Tipe 8: Akurasi).
 
-Pertanyaan juga melewati pipeline yang sama: Scanner -> Parser -> Translator -> Evaluator.
+CATATAN PENTING (VERSI INI):
+Jawaban spesifik per-kondisi (diagnosis, rekomendasi, tim eskalasi) TIDAK lagi
+ditulis ulang di sini, melainkan DIAMBIL LANGSUNG dari rules.py melalui
+process_alert(). Dengan begitu jawaban chatbot SELALU sama dengan hasil di
+Tab 1 (Single Alert) -> satu sumber kebenaran (single source of truth).
+
+STREAM_KB di bawah kini hanya berisi DESKRIPSI UMUM tiap stream (pengetahuan
+level-stream untuk pertanyaan "apa arti X?"), bukan rekomendasi spesifik.
 """
 
 import re
@@ -12,7 +19,8 @@ from rules import process_alert, detect_stream
 from database import get_all_alerts, get_alert_stats
 
 # ============================================================
-# BASIS PENGETAHUAN PER STREAM (untuk Tipe 1 & 4)
+# DESKRIPSI UMUM PER STREAM (untuk Tipe 1 "apa arti" — level stream)
+# Rekomendasi/diagnosis spesifik per-kondisi diambil dari rules.py.
 # ============================================================
 
 STREAM_KB = {
@@ -39,20 +47,34 @@ STREAM_KB = {
 }
 
 # ============================================================
-# [TAMBAHAN] DETEKSI INTENT (SEKARANG 8 TIPE, TERMASUK AKURASI)
+# DETEKSI INTENT (8 TIPE) — [DIPERBARUI: URUTAN PRIORITAS DIBENAHI]
+# Urutan dari yang PALING SPESIFIK ke paling umum, agar "tampilkan statistik"
+# tidak salah tertangkap sebagai 'daftar' (kata 'tampilkan').
 # ============================================================
 
 INTENT_PATTERNS = [
-    ('jelas',     r'\b(apa arti|apa itu|jelaskan|maksud|artinya)\b'),
-    ('sebab',     r'\b(kenapa|mengapa|penyebab|knp)\b'),
-    ('tindak',    r'\b(tindakan|rekomendasi|solusi|harus apa|apa yang harus|saran)\b'),
-    ('skor',      r'\b(berapa skor|seberapa urgent|urgensi|seberapa penting|level berapa)\b'),
-    ('waktu',     r'\b(jam|pukul|tanggal|hari ini|kemarin)\b'),
-    ('statistik', r'\b(total|jumlah|statistik|berapa banyak|berapa alert|ada berapa)\b'),
-    ('daftar',    r'\b(tampilkan|lihat|daftar|list|sebutkan)\b'),
-    # ============= TIPE 8: AKURASI =============
     ('akurasi',   r'\b(akurasi|tingkat akurasi|keakuratan|berapa persen|ketepatan|berhasil|gagal|confusion matrix)\b'),
+    ('statistik', r'\b(total|jumlah|statistik|berapa banyak|berapa alert|ada berapa)\b'),
+    ('skor',      r'\b(berapa skor|seberapa urgent|urgensi|seberapa penting|level berapa)\b'),
+    ('tindak',    r'\b(tindakan|rekomendasi|solusi|harus apa|apa yang harus|saran|eskalasi)\b'),
+    ('sebab',     r'\b(kenapa|mengapa|penyebab|knp|diagnosis)\b'),
+    ('jelas',     r'\b(apa arti|apa itu|jelaskan|maksud|artinya)\b'),
+    ('waktu',     r'\b(jam|pukul|tanggal|hari ini|kemarin)\b'),
+    ('daftar',    r'\b(tampilkan|lihat|daftar|list|sebutkan)\b'),
 ]
+
+# --- VERSI LAMA (ARSIP) INTENT_PATTERNS --------------------------------------
+# INTENT_PATTERNS = [
+#     ('jelas',     r'\b(apa arti|apa itu|jelaskan|maksud|artinya)\b'),
+#     ('sebab',     r'\b(kenapa|mengapa|penyebab|knp)\b'),
+#     ('tindak',    r'\b(tindakan|rekomendasi|solusi|harus apa|apa yang harus|saran)\b'),
+#     ('skor',      r'\b(berapa skor|seberapa urgent|urgensi|seberapa penting|level berapa)\b'),
+#     ('waktu',     r'\b(jam|pukul|tanggal|hari ini|kemarin)\b'),
+#     ('statistik', r'\b(total|jumlah|statistik|berapa banyak|berapa alert|ada berapa)\b'),
+#     ('daftar',    r'\b(tampilkan|lihat|daftar|list|sebutkan)\b'),
+#     ('akurasi',   r'\b(akurasi|tingkat akurasi|keakuratan|berapa persen|ketepatan|berhasil|gagal|confusion matrix)\b'),
+# ]
+# -----------------------------------------------------------------------------
 
 
 def detect_intent(text: str):
@@ -103,12 +125,29 @@ def _latest_alert(stream: str):
     return None
 
 
+def _expert_for_stream(stream: str):
+    """
+    [BARU] Ambil alert TERBARU stream tsb dari database, lalu jalankan ulang
+    process_alert() untuk mendapatkan jawaban pakar (diagnosis/rekomendasi/tim)
+    yang KONSISTEN dengan rules.py & Tab 1.
+    Mengembalikan (hasil_process_alert, raw_text) atau (None, None) bila kosong.
+    """
+    row = _latest_alert(stream)
+    if row is not None:
+        raw = str(row['raw_message'])
+        try:
+            return process_alert(raw), raw
+        except Exception:
+            return None, None
+    return None, None
+
+
 def handle_jelas(stream: str) -> str:
     kb = STREAM_KB[stream]
     msg = f"**Tipe 1 - Penjelasan Makna Alert**\n\nAlert **{stream}** ({kb['nama']}) {kb['arti']}"
-    row = _latest_alert(stream)
-    if row is not None:
-        msg += f"\n\n*Contoh terbaru di database:* `{str(row['raw_message'])[:120]}` -> {row['reason']}"
+    res, raw = _expert_for_stream(stream)
+    if res is not None:
+        msg += f"\n\n*Contoh terbaru di database:* `{raw[:120]}`\n→ {res.get('diagnosis', '-')}"
     return msg
 
 
@@ -123,17 +162,51 @@ def handle_skor(stream: str) -> str:
 
 
 def handle_sebab(stream: str) -> str:
-    row = _latest_alert(stream)
-    if row is not None:
-        return (f"**Tipe 3 - Penyebab Kondisi**\n\n"
-                f"Alert **{stream}** terbaru muncul karena: {row['reason']}.")
+    # [DIPERBARUI] gunakan diagnosis dari rules.py (bukan sekadar reason teknis)
+    res, raw = _expert_for_stream(stream)
+    if res is not None:
+        return (f"**Tipe 3 - Penyebab / Diagnosis**\n\n"
+                f"Alert **{stream}** terbaru: {res.get('diagnosis', '-')}\n\n"
+                f"*(Alasan skor: {res.get('reason', '-')})*")
     kb = STREAM_KB[stream]
     return f"**Tipe 3 - Penyebab Kondisi**\n\nSecara umum, alert **{stream}** muncul ketika {kb['arti']}"
 
 
 def handle_tindak(stream: str) -> str:
+    # [DIPERBARUI] rekomendasi spesifik dari rules.py; fallback ke deskripsi umum
+    res, raw = _expert_for_stream(stream)
+    if res is not None:
+        return (f"**Tipe 4 - Rekomendasi Tindakan**\n\n"
+                f"Untuk alert **{stream}** terbaru:\n\n"
+                f"- 🩺 Diagnosis: {res.get('diagnosis', '-')}\n"
+                f"- 🛠️ Rekomendasi: {res.get('rekomendasi', '-')}\n"
+                f"- 👥 Eskalasi ke: {res.get('tim_eskalasi', '-')}")
     kb = STREAM_KB[stream]
-    return f"**Tipe 4 - Rekomendasi Tindakan**\n\nUntuk alert **{stream}**: {kb['tindakan']}"
+    return (f"**Tipe 4 - Rekomendasi Tindakan**\n\n"
+            f"Secara umum, untuk alert **{stream}**: {kb['tindakan']}\n\n"
+            f"*(Belum ada contoh alert {stream} di database; tempel teks alert-nya untuk rekomendasi spesifik.)*")
+
+# --- VERSI LAMA (ARSIP) handler 1/3/4 ----------------------------------------
+# def handle_jelas(stream):
+#     kb = STREAM_KB[stream]
+#     msg = f"**Tipe 1 - Penjelasan Makna Alert**\n\nAlert **{stream}** ({kb['nama']}) {kb['arti']}"
+#     row = _latest_alert(stream)
+#     if row is not None:
+#         msg += f"\n\n*Contoh terbaru di database:* `{str(row['raw_message'])[:120]}` -> {row['reason']}"
+#     return msg
+#
+# def handle_sebab(stream):
+#     row = _latest_alert(stream)
+#     if row is not None:
+#         return (f"**Tipe 3 - Penyebab Kondisi**\n\n"
+#                 f"Alert **{stream}** terbaru muncul karena: {row['reason']}.")
+#     kb = STREAM_KB[stream]
+#     return f"**Tipe 3 - Penyebab Kondisi**\n\nSecara umum, alert **{stream}** muncul ketika {kb['arti']}"
+#
+# def handle_tindak(stream):
+#     kb = STREAM_KB[stream]
+#     return f"**Tipe 4 - Rekomendasi Tindakan**\n\nUntuk alert **{stream}**: {kb['tindakan']}"
+# -----------------------------------------------------------------------------
 
 
 def handle_daftar(text: str) -> str:
@@ -187,7 +260,7 @@ def handle_waktu(text: str) -> str:
 
 
 # ============================================================
-# [TAMBAHAN] HANDLER TIPE 8: AKURASI (HUBUNGAN DENGAN DATABASE.PY)
+# HANDLER TIPE 8: AKURASI (HUBUNGAN DENGAN DATABASE.PY)
 # ============================================================
 
 def handle_akurasi() -> str:
@@ -244,12 +317,27 @@ def _format_alert_result(r: dict) -> str:
                 "Coba tempel teks alert yang lengkap, atau ajukan pertanyaan seperti "
                 "*\"apa arti alert BWCE?\"*, *\"berapa skor NGSSP?\"*, *\"tampilkan alert kritis\"*.\n\n"
                 "💡 *Atau tanyakan 'akurasi' untuk melihat hasil uji sistem.*")
+    # [DIPERBARUI] tampilkan jawaban pakar (sama dengan Tab 1)
     msg = f"**Hasil pemrosesan alert**\n\n"
     msg += f"- Stream: **{r['stream']}**\n"
-    msg += f"- Skor: **{r['score']}/10**\n"
-    msg += f"- Level: {r['level']}\n"
-    msg += f"- Alasan: {r['reason']}"
+    msg += f"- Skor: **{r['score']}/10** ({r['level']})\n"
+    msg += f"- 🩺 Diagnosis: {r.get('diagnosis', '-')}\n"
+    msg += f"- 🛠️ Rekomendasi: {r.get('rekomendasi', '-')}\n"
+    msg += f"- 👥 Eskalasi ke: {r.get('tim_eskalasi', '-')}\n"
+    msg += f"- _Alasan skor: {r['reason']}_"
     return msg
+
+# --- VERSI LAMA (ARSIP) _format_alert_result ---------------------------------
+# def _format_alert_result(r):
+#     if r['stream'] == 'UNKNOWN':
+#         return ("...pesan tidak dikenali...")
+#     msg = f"**Hasil pemrosesan alert**\n\n"
+#     msg += f"- Stream: **{r['stream']}**\n"
+#     msg += f"- Skor: **{r['score']}/10**\n"
+#     msg += f"- Level: {r['level']}\n"
+#     msg += f"- Alasan: {r['reason']}"
+#     return msg
+# -----------------------------------------------------------------------------
 
 
 # ============================================================
@@ -281,15 +369,11 @@ def chatbot_respond(text: str) -> str:
         return handle_daftar(text)
     if intent == 'waktu':
         return handle_waktu(text)
-    
-    # ==========================================================
-    # [TAMBAHAN] BAGIAN 3: Intent AKURASI (Tipe 8)
-    # ==========================================================
     if intent == 'akurasi':
         return handle_akurasi()
 
     # ==========================================================
-    # BAGIAN 4: Intent penjelasan (1-4) yang MEMBUTUHKAN stream
+    # BAGIAN 3: Intent penjelasan (1-4) yang MEMBUTUHKAN stream
     # ==========================================================
     stream = extract_stream_ref(text)
     if stream is None:

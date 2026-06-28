@@ -27,7 +27,7 @@ init_database()
 
 st.set_page_config(page_title="Alert Re-Scoring System + DB", page_icon="🚨", layout="wide")
 st.title("🚨 Alert Re-Scoring System with Database")
-st.markdown("### Rule-Based NLP + SQLite Database (Adaptasi Jurnal NLP)")
+st.markdown("### Rule-Based NLP + Sistem Pakar (Adaptasi Jurnal NLP)")
 st.markdown("---")
 
 # ============================================================
@@ -88,7 +88,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🎯 Uji Akurasi"  # <-- TAB BARU UNTUK BAB IV
 ])
 
-# ---------- TAB 1 (SINGLE ALERT) - TIDAK BERUBAH ----------
+# ---------- TAB 1 (SINGLE ALERT) - [DIPERBARUI: TAMPILKAN JAWABAN SISTEM PAKAR] ----------
 with tab1:
     st.header("🔍 Proses Satu Alert")
     alert_text = st.text_area("Masukkan teks alert:",
@@ -101,14 +101,28 @@ with tab1:
     if process_btn and alert_text.strip():
         with st.spinner("Memproses..."):
             result = process_alert(alert_text)
+
+        # Ringkasan skor (re-scoring)
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Stream", result['stream'])
         col_b.metric("Skor", f"{result['score']}/10")
         col_c.metric("Level", result['level'])
-        with st.expander("📋 Detail", expanded=True):
-            st.markdown(f"**Alasan:** {result['reason']}")
+
+        # ===== [BARU] JAWABAN SISTEM PAKAR (Diagnosis + Rekomendasi + Eskalasi) =====
+        st.markdown("#### 🧠 Jawaban Sistem")
+        jc1, jc2 = st.columns(2)
+        with jc1:
+            st.info(f"**🩺 Diagnosis**\n\n{result.get('diagnosis', '-')}")
+        with jc2:
+            st.warning(f"**🛠️ Rekomendasi Tindakan**\n\n{result.get('rekomendasi', '-')}")
+        st.markdown(f"**👥 Eskalasi ke:** `{result.get('tim_eskalasi', '-')}`")
+
+        # Detail teknis dipindah ke expander (tertutup) agar jawabannya yang menonjol
+        with st.expander("📋 Detail Teknis (alasan skor & fitur terekstrak)", expanded=False):
+            st.markdown(f"**Alasan skor:** {result['reason']}")
             st.json(result.get('features', {}))
             st.code(result['raw_text'])
+
         if st.button("💾 Simpan Alert Ini ke Database"):
             insert_alert({
                 'timestamp': datetime.now().isoformat(), 
@@ -122,7 +136,24 @@ with tab1:
             })
             st.success(f"✅ Tersimpan! Total sekarang: {get_alert_stats()['total']}")
 
-# ---------- TAB 2 (UPLOAD EXCEL) - [DIPERBAIKI UNTUK AKURASI] ----------
+    # --- VERSI LAMA (ARSIP) blok hasil Tab 1 ---------------------------------
+    # if process_btn and alert_text.strip():
+    #     with st.spinner("Memproses..."):
+    #         result = process_alert(alert_text)
+    #     col_a, col_b, col_c = st.columns(3)
+    #     col_a.metric("Stream", result['stream'])
+    #     col_b.metric("Skor", f"{result['score']}/10")
+    #     col_c.metric("Level", result['level'])
+    #     with st.expander("📋 Detail", expanded=True):
+    #         st.markdown(f"**Alasan:** {result['reason']}")
+    #         st.json(result.get('features', {}))
+    #         st.code(result['raw_text'])
+    #     if st.button("💾 Simpan Alert Ini ke Database"):
+    #         insert_alert({...})
+    #         st.success(f"✅ Tersimpan! Total sekarang: {get_alert_stats()['total']}")
+    # -------------------------------------------------------------------------
+
+# ---------- TAB 2 (UPLOAD EXCEL) - [DIPERBARUI: KOLOM JAWABAN PAKAR DI HASIL] ----------
 with tab2:
     st.header("📤 Upload File Excel & Proses Batch (Dengan Ground Truth)")
     st.markdown("""
@@ -181,6 +212,9 @@ with tab2:
                             'score': 0, 
                             'level': '⚪ KOSONG',
                             'reason': 'Teks alert kosong', 
+                            'diagnosis': 'Baris kosong.',
+                            'rekomendasi': '-',
+                            'tim_eskalasi': '-',
                             'features': {}, 
                             'raw_text': raw_text
                         }
@@ -231,18 +265,26 @@ with tab2:
 
                 # Tampilkan hasil
                 st.subheader("📊 Hasil Pemrosesan Batch")
+                # [BARU] Kolom Tim_Eskalasi, Diagnosis, Rekomendasi ikut ditampilkan
                 df_results = pd.DataFrame([{
                     'Stream': r['stream'], 
                     'Score': r['score'], 
                     'Level': r['level'],
                     'Expected_Score': r.get('expected_score', '-'),
                     'Cocok': '✅' if r.get('expected_score') is not None and r['score'] == r.get('expected_score') else ('-' if r.get('expected_score') is None else '❌'),
+                    'Tim_Eskalasi': r.get('tim_eskalasi', '-'),
+                    'Diagnosis': r.get('diagnosis', '-'),
+                    'Rekomendasi': r.get('rekomendasi', '-'),
                     'Reason': r['reason'],
                     'Alert_Text': r['raw_text'][:150] + ('...' if len(r['raw_text']) > 150 else '')
                 } for r in results])
                 st.dataframe(df_results, use_container_width=True, hide_index=True,
-                    column_config={'Alert_Text': st.column_config.TextColumn('Teks Alert', width='large'),
-                                   'Score': st.column_config.NumberColumn('Skor', format='%d/10')})
+                    column_config={
+                        'Alert_Text': st.column_config.TextColumn('Teks Alert', width='large'),
+                        'Diagnosis': st.column_config.TextColumn('Diagnosis', width='large'),
+                        'Rekomendasi': st.column_config.TextColumn('Rekomendasi', width='large'),
+                        'Score': st.column_config.NumberColumn('Skor', format='%d/10')
+                    })
                 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Total Alert", len(results))
@@ -274,11 +316,33 @@ with tab2:
             ]
             with st.spinner("Memproses sampel..."):
                 results = process_alerts_batch(sample_alerts)
+                # [BARU] sertakan kolom jawaban pakar pada tabel sampel
                 df_sample = pd.DataFrame([{
                     'Stream': r['stream'], 'Score': r['score'], 'Level': r['level'],
-                    'Reason': r['reason'], 'Alert': r['raw_text'][:100]
+                    'Tim_Eskalasi': r.get('tim_eskalasi', '-'),
+                    'Diagnosis': r.get('diagnosis', '-'),
+                    'Rekomendasi': r.get('rekomendasi', '-'),
+                    'Alert': r['raw_text'][:100]
                 } for r in results])
-                st.dataframe(df_sample, use_container_width=True, hide_index=True)
+                st.dataframe(df_sample, use_container_width=True, hide_index=True,
+                    column_config={
+                        'Diagnosis': st.column_config.TextColumn('Diagnosis', width='large'),
+                        'Rekomendasi': st.column_config.TextColumn('Rekomendasi', width='large'),
+                    })
+
+    # --- VERSI LAMA (ARSIP) tabel hasil batch Tab 2 --------------------------
+    # df_results = pd.DataFrame([{
+    #     'Stream': r['stream'], 'Score': r['score'], 'Level': r['level'],
+    #     'Expected_Score': r.get('expected_score', '-'),
+    #     'Cocok': '✅' if r.get('expected_score') is not None and r['score'] == r.get('expected_score') else ('-' if r.get('expected_score') is None else '❌'),
+    #     'Reason': r['reason'],
+    #     'Alert_Text': r['raw_text'][:150] + ('...' if len(r['raw_text']) > 150 else '')
+    # } for r in results])
+    # df_sample = pd.DataFrame([{
+    #     'Stream': r['stream'], 'Score': r['score'], 'Level': r['level'],
+    #     'Reason': r['reason'], 'Alert': r['raw_text'][:100]
+    # } for r in results])
+    # -------------------------------------------------------------------------
 
 # ---------- TAB 3 (DATABASE) - TIDAK BERUBAH ----------
 with tab3:
@@ -444,4 +508,4 @@ with tab6:
 # FOOTER
 # ============================================================
 st.markdown("---")
-st.caption("🚀 Alert Re-Scoring System | Rule-Based NLP + SQLite | Adaptasi Priandana & Indra (2024)")
+st.caption("🚀 Alert Re-Scoring System | Rule-Based NLP + Sistem Pakar | Adaptasi Priandana & Indra (2024)")
