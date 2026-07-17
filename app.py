@@ -354,20 +354,32 @@ with tab_single:
     # --------------------------------------------------------
     # RESET FORM
     # --------------------------------------------------------
-    # Pembersihan dilakukan di AWAL tab, sebelum widget dibuat.
-    # Streamlit tidak mengizinkan pengubahan state widget setelah
-    # widget terbentuk, sehingga tombol reset cukup menyalakan
-    # penanda ini lalu memicu rerun.
+    # Menghapus kunci session_state saja TIDAK cukup untuk
+    # mengosongkan text_area: nilai lama masih dikirim ulang dari
+    # sisi browser pada rerun berikutnya, sehingga teks muncul lagi.
+    #
+    # Cara yang pasti berhasil adalah MENGGANTI key widget. Key
+    # yang berbeda dianggap Streamlit sebagai widget yang benar-
+    # benar baru, sehingga tampil dengan nilai awal (kosong).
+    # Nomor urut form di bawah ini dinaikkan setiap kali reset.
 
     if st.session_state.get("single_alert_pending_reset"):
+
+        # Buang sisa state milik form sebelumnya.
+        for kunci in list(st.session_state.keys()):
+            if str(kunci).startswith("single_alert_input_"):
+                st.session_state.pop(kunci, None)
 
         for kunci in (
             "analysis_result",
             "analysis_input",
             "analysis_saved",
-            "single_alert_input",
         ):
             st.session_state.pop(kunci, None)
+
+        st.session_state["single_alert_form_no"] = (
+            st.session_state.get("single_alert_form_no", 0) + 1
+        )
 
         st.session_state["single_alert_pending_reset"] = False
 
@@ -395,11 +407,15 @@ with tab_single:
 
         st.session_state["single_alert_last_saved_id"] = None
 
+    # Key text_area mengandung nomor urut form agar dapat
+    # dikosongkan sepenuhnya saat reset (lihat penjelasan di atas).
+    nomor_form = st.session_state.get("single_alert_form_no", 0)
+
     raw_text = st.text_area(
         "Masukkan teks alert:",
         height=220,
         placeholder="Masukkan satu teks alert OCC...",
-        key="single_alert_input",
+        key=f"single_alert_input_{nomor_form}",
     )
 
     tombol_proses, tombol_reset = st.columns([3, 1])
