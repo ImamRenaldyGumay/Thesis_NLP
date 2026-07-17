@@ -44,6 +44,16 @@ from database import (
 
 from chatbot import chatbot_response
 
+from extraction import (
+    init_extraction_db,
+    ambil_ekstraksi,
+    simpan_verifikasi,
+    get_extraction_checks,
+    hapus_semua_verifikasi,
+    jumlah_alert_terverifikasi,
+    evaluasi_ekstraksi,
+)
+
 from labeling import (
     init_labeling_db,
     save_label,
@@ -77,6 +87,7 @@ st.set_page_config(
 
 init_db()
 init_labeling_db()
+init_extraction_db()
 
 
 # ============================================================
@@ -1671,6 +1682,120 @@ with tab_evaluasi:
         """
     )
 
+    # --------------------------------------------------------
+    # BAGIAN 1 — AKURASI EKSTRAKSI (INFORMATION EXTRACTION)
+    # --------------------------------------------------------
+
+    st.subheader("1️⃣ Akurasi Ekstraksi Informasi")
+
+    st.write(
+        """
+        Bagian ini mengukur kemampuan **Scanner dan Parser**
+        mengekstraksi informasi dari teks alert — inti dari
+        penelitian ini, dan satu-satunya bagian model yang
+        benar-benar dapat gagal. Datanya berasal dari menu
+        🏷️ Pelabelan → *Verifikasi Ekstraksi*.
+        """
+    )
+
+    rekap_ekstraksi = evaluasi_ekstraksi()
+
+    if rekap_ekstraksi["n_alert"] == 0:
+
+        st.info(
+            "Belum ada data verifikasi ekstraksi. Silakan periksa "
+            "beberapa alert pada menu 🏷️ Pelabelan → Verifikasi "
+            "Ekstraksi terlebih dahulu."
+        )
+
+    else:
+
+        e1, e2, e3 = st.columns(3)
+        e1.metric("Alert Diperiksa", rekap_ekstraksi["n_alert"])
+        e2.metric(
+            "Akurasi Field",
+            f"{rekap_ekstraksi['akurasi_field'] * 100:.2f}%",
+            help=(
+                "Proporsi field yang benar diekstraksi, dihitung "
+                "atas seluruh pasangan (alert, field)."
+            ),
+        )
+        e3.metric(
+            "Akurasi Alert",
+            f"{rekap_ekstraksi['akurasi_alert'] * 100:.2f}%",
+            help=(
+                "Proporsi alert yang SELURUH field-nya benar. "
+                "Ukuran yang lebih ketat."
+            ),
+        )
+
+        st.markdown("**Akurasi per field** (terendah lebih dulu)")
+        st.dataframe(
+            rekap_ekstraksi["per_field"],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Field dengan akurasi rendah menunjukkan pola regex "
+            "yang belum menangani variasi format. Inilah bahan "
+            "utama analisis kesalahan pada bab pengujian."
+        )
+
+        st.markdown("**Akurasi per stream**")
+        st.dataframe(
+            rekap_ekstraksi["per_stream"],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if not rekap_ekstraksi["kesalahan"].empty:
+
+            st.markdown("**Daftar kesalahan ekstraksi**")
+            st.dataframe(
+                rekap_ekstraksi["kesalahan"],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.download_button(
+                "⬇️ Download Kesalahan Ekstraksi (CSV)",
+                data=rekap_ekstraksi["kesalahan"]
+                .to_csv(index=False)
+                .encode("utf-8"),
+                file_name="kesalahan_ekstraksi.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.download_button(
+            "⬇️ Download Data Verifikasi Lengkap (CSV)",
+            data=get_extraction_checks()
+            .to_csv(index=False)
+            .encode("utf-8"),
+            file_name="verifikasi_ekstraksi.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # BAGIAN 2 — AKURASI ATURAN (UJUNG-KE-UJUNG)
+    # --------------------------------------------------------
+
+    st.subheader("2️⃣ Akurasi Aturan (Ujung-ke-Ujung)")
+
+    st.warning(
+        "⚠️ **Bacalah angka di bagian ini dengan hati-hati.** "
+        "Evaluator bersifat deterministik: bila fakta sudah benar, "
+        "hasil aturan IF-THEN pasti benar. Karena pelabel juga "
+        "menerapkan aturan yang sama, akurasi di sini cenderung "
+        "mendekati 100% dengan sendirinya. Nilainya terletak pada "
+        "kemampuannya menangkap kegagalan ekstraksi secara "
+        "ujung-ke-ujung, bukan sebagai bukti kecerdasan model. "
+        "Laporkan berdampingan dengan akurasi ekstraksi di atas."
+    )
+
     sumber = st.radio(
         "Sumber data uji:",
         options=[
@@ -1980,10 +2105,10 @@ with tab_pelabelan:
     mode = st.radio(
         "Pilih cara pelabelan:",
         options=[
+            "Verifikasi Ekstraksi (disarankan)",
             "Satu per satu (1-1)",
             "Batch (upload file)",
         ],
-        horizontal=True,
         key="mode_pelabelan",
     )
 
@@ -1991,7 +2116,275 @@ with tab_pelabelan:
     # MODE 1-1
     # ========================================================
 
-    if mode == "Satu per satu (1-1)":
+    # ========================================================
+    # MODE VERIFIKASI EKSTRAKSI
+    # ========================================================
+    #
+    # Menguji bagian model yang benar-benar dapat gagal, yaitu
+    # Scanner dan Parser (ekstraksi informasi). Acuan kebenaran
+    # adalah TEKS ALERT itu sendiri, bukan penilaian pemeriksa,
+    # sehingga pengujian ini tidak melingkar.
+
+    if mode == "Verifikasi Ekstraksi (disarankan)":
+
+        if st.session_state.get("verif_pending_reset"):
+            for kunci in list(st.session_state.keys()):
+                if str(kunci).startswith("verif_text_"):
+                    st.session_state.pop(kunci, None)
+            st.session_state.pop("verif_hasil", None)
+            st.session_state["verif_form_no"] = (
+                st.session_state.get("verif_form_no", 0) + 1
+            )
+            st.session_state["verif_pending_reset"] = False
+
+        st.subheader("🔎 Verifikasi Hasil Ekstraksi")
+
+        st.info(
+            "**Mengapa cara ini yang disarankan.** Evaluator model "
+            "bersifat deterministik: bila fakta sudah benar, hasil "
+            "aturan IF-THEN pasti benar. Karena pemeriksa juga "
+            "menerapkan aturan yang sama, akurasi aturan cenderung "
+            "mendekati 100% dengan sendirinya dan kurang bermakna.\n\n"
+            "Bagian yang benar-benar dapat gagal adalah **ekstraksi** "
+            "(Scanner dan Parser), dan itulah inti penelitian Anda. "
+            "Di sini acuan kebenarannya adalah **teks alert itu "
+            "sendiri** — bukan pendapat Anda, bukan keluaran model — "
+            "sehingga hasilnya objektif."
+        )
+
+        st.warning(
+            "⚠️ **Bacalah teks alert, jangan hanya menyetujui tabel.** "
+            "Seluruh baris tercentang benar secara bawaan. Bila Anda "
+            "menyetujui tanpa memeriksa, akurasinya menjadi 100% "
+            "palsu. Baris yang ditandai mencurigakan oleh sistem "
+            "wajib diperiksa lebih teliti."
+        )
+
+        verif_no = st.session_state.get("verif_form_no", 0)
+
+        verif_text = st.text_area(
+            "Teks alert asli:",
+            height=150,
+            key=f"verif_text_{verif_no}",
+            placeholder="Tempel satu teks alert di sini...",
+        )
+
+        v1, v2 = st.columns([3, 1])
+
+        with v1:
+            ekstrak_ditekan = st.button(
+                "🔍 Ekstrak & Periksa",
+                type="primary",
+                use_container_width=True,
+            )
+
+        with v2:
+            if st.button(
+                "🔄 Alert Baru",
+                use_container_width=True,
+                key="verif_reset",
+            ):
+                st.session_state["verif_pending_reset"] = True
+                st.rerun()
+
+        if ekstrak_ditekan:
+
+            if not verif_text.strip():
+                st.warning("Teks alert belum diisi.")
+            else:
+                st.session_state["verif_hasil"] = {
+                    "text": verif_text.strip(),
+                    "ekstraksi": ambil_ekstraksi(verif_text.strip()),
+                }
+
+        hasil_verif = st.session_state.get("verif_hasil")
+
+        if hasil_verif:
+
+            teks_alert = hasil_verif["text"]
+            ekstraksi = hasil_verif["ekstraksi"]
+            stream_terdeteksi = ekstraksi["stream"]
+
+            st.markdown("#### Teks alert yang diperiksa")
+            st.code(teks_alert, language=None)
+
+            st.markdown(
+                f"**Stream terdeteksi model:** `{stream_terdeteksi}`"
+            )
+
+            if stream_terdeteksi == "UNKNOWN":
+                st.error(
+                    "Model tidak mengenali stream alert ini. "
+                    "Ini sendiri merupakan kegagalan Scanner dan "
+                    "layak dicatat sebagai temuan."
+                )
+
+            if ekstraksi["curiga"]:
+                st.error(
+                    "🚩 **Sistem menandai ekstraksi ini "
+                    "mencurigakan — periksa dengan teliti:**"
+                )
+                for c in ekstraksi["curiga"]:
+                    st.write(f"- {c}")
+            elif ekstraksi["fields"]:
+                st.success(
+                    "Pemeriksaan konsistensi otomatis tidak "
+                    "menemukan kejanggalan. Tetap bandingkan "
+                    "dengan teks di atas."
+                )
+
+            if not ekstraksi["fields"]:
+
+                st.write(
+                    "Tidak ada field yang dapat diperiksa untuk "
+                    "stream ini."
+                )
+
+            else:
+
+                st.markdown("#### Periksa tiap field")
+                st.caption(
+                    "Hapus centang pada field yang SALAH, lalu isi "
+                    "nilai yang seharusnya sesuai teks alert."
+                )
+
+                tabel = pd.DataFrame([
+                    {
+                        "field": f["field"],
+                        "nilai_terekstraksi": f["nilai_terekstraksi"],
+                        "benar": True,
+                        "nilai_seharusnya": "",
+                    }
+                    for f in ekstraksi["fields"]
+                ])
+
+                edited = st.data_editor(
+                    tabel,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["field", "nilai_terekstraksi"],
+                    column_config={
+                        "field": st.column_config.TextColumn(
+                            "Field",
+                        ),
+                        "nilai_terekstraksi": (
+                            st.column_config.TextColumn(
+                                "Nilai hasil ekstraksi",
+                            )
+                        ),
+                        "benar": st.column_config.CheckboxColumn(
+                            "Benar?",
+                            help=(
+                                "Centang bila sesuai teks alert."
+                            ),
+                        ),
+                        "nilai_seharusnya": (
+                            st.column_config.TextColumn(
+                                "Nilai seharusnya (bila salah)",
+                            )
+                        ),
+                    },
+                    key=f"verif_editor_{verif_no}",
+                )
+
+                nama_periksa = st.text_input(
+                    "Nama/inisial pemeriksa:",
+                    key=f"verif_pelabel_{verif_no}",
+                    placeholder="mis. IRG",
+                )
+
+                if st.button(
+                    "💾 Simpan Verifikasi",
+                    type="primary",
+                    use_container_width=True,
+                ):
+
+                    baris = edited.to_dict("records")
+
+                    kurang = [
+                        b["field"]
+                        for b in baris
+                        if not b["benar"]
+                        and not str(
+                            b.get("nilai_seharusnya", "")
+                        ).strip()
+                    ]
+
+                    if kurang:
+                        st.error(
+                            "Field berikut ditandai salah tetapi "
+                            "nilai seharusnya belum diisi: "
+                            + ", ".join(kurang)
+                        )
+
+                    else:
+
+                        no = simpan_verifikasi(
+                            raw_text=teks_alert,
+                            stream=stream_terdeteksi,
+                            hasil_periksa=baris,
+                            pelabel=nama_periksa.strip(),
+                        )
+
+                        salah = sum(
+                            1 for b in baris if not b["benar"]
+                        )
+
+                        st.success(
+                            f"Verifikasi tersimpan (alert #{no}): "
+                            f"{len(baris) - salah} benar, "
+                            f"{salah} salah."
+                        )
+
+                        st.session_state["verif_pending_reset"] = True
+                        st.rerun()
+
+        st.divider()
+
+        st.subheader("📊 Rekap Verifikasi Ekstraksi")
+
+        total_verif = jumlah_alert_terverifikasi()
+
+        if total_verif == 0:
+
+            st.info(
+                "Belum ada alert yang diverifikasi. Hasil "
+                "perhitungan akurasinya muncul di menu 🧪 Pengujian."
+            )
+
+        else:
+
+            rekap = evaluasi_ekstraksi()
+
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Alert Diperiksa", rekap["n_alert"])
+            r2.metric(
+                "Akurasi Field",
+                f"{rekap['akurasi_field'] * 100:.2f}%",
+            )
+            r3.metric(
+                "Akurasi Alert",
+                f"{rekap['akurasi_alert'] * 100:.2f}%",
+                help=(
+                    "Alert dianggap benar hanya bila SELURUH "
+                    "field-nya benar."
+                ),
+            )
+
+            with st.expander("🗑️ Hapus semua verifikasi"):
+                yakin = st.checkbox(
+                    "Saya yakin ingin menghapus semua",
+                    key="yakin_hapus_verif",
+                )
+                if st.button(
+                    "Hapus Semua",
+                    disabled=not yakin,
+                ):
+                    hapus_semua_verifikasi()
+                    st.success("Seluruh verifikasi dihapus.")
+                    st.rerun()
+
+    elif mode == "Satu per satu (1-1)":
 
         # Pengosongan form dilakukan di awal, sebelum widget dibuat.
         if st.session_state.get("pelabelan_pending_reset"):

@@ -120,6 +120,10 @@ def _to_number(value: Optional[str]):
     if value is None:
         return None
 
+    # Buang pemisah ribuan sebelum konversi, mis. "1,828" -> 1828.
+    if isinstance(value, str):
+        value = value.replace(",", "")
+
     try:
         number = float(value)
 
@@ -254,13 +258,23 @@ def scanner(text: str, stream: str) -> Dict[str, Any]:
 
     if stream == "BWCE":
 
+        # Pola bilangan bulat yang MENDUKUNG pemisah ribuan.
+        # Sebelumnya dipakai [0-9]+ sehingga "Total: 1,828"
+        # terbaca 1 (regex berhenti di koma) dan seluruh
+        # pembacaan alert menjadi salah tanpa disadari.
+        #
+        # Alternatif pertama menangkap bilangan berpemisah
+        # (1,828). Bila tidak cocok, alternatif kedua menangkap
+        # bilangan biasa (828 atau 12345). Urutannya penting.
+        BIL = r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)"
+
         patterns = {
             "APP": r"^\s*([\w\-]+)\s*-\s*Total\s*:",
-            "TOTAL": r"Total:\s*([0-9]+)",
-            "SUCCESS": r"Success:\s*([0-9]+)",
-            "BE": r"BE:\s*([0-9]+)",
-            "TE": r"TE:\s*([0-9]+)",
-            "UNDEFINED": r"Undefined:\s*([0-9]+)",
+            "TOTAL": r"Total:\s*" + BIL,
+            "SUCCESS": r"Success:\s*" + BIL,
+            "BE": r"BE:\s*" + BIL,
+            "TE": r"TE:\s*" + BIL,
+            "UNDEFINED": r"Undefined:\s*" + BIL,
             "SR": r"SR:\s*([0-9.]+)\s*%",
             "TE_INFO": r"TE Info:\s*(.*?)\s*\|",
         }
@@ -319,8 +333,10 @@ def scanner(text: str, stream: str) -> Dict[str, Any]:
                 )
             )
 
+        # Mendukung pemisah ribuan, mis. "with val: 1,234"
+        # pada metric bertipe cacah seperti Stuck Thread.
         value_match = re.search(
-            r"with\s+val:\s*([0-9.]+)",
+            r"with\s+val:\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9.]+)",
             text,
             re.IGNORECASE,
         )
