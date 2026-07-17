@@ -17,6 +17,7 @@ Basis Aturan Produksi:
     R-BWCE-01  : SR Degraded + Technical Error
     R-NGSSP-01 : Node Exporter Status dengan val = 0
     R-NGSSP-02 : JVM Managed Server Status dengan val = 0
+    R-NGSSP-03 : CPU Utilization dengan val >= ambang batas
     R-USSD-01  : Process is not running
     R-USSD-02  : Errors found
     R-CRM-01   : Service DOWN
@@ -42,6 +43,35 @@ Kompatibilitas project lama:
 
 import re
 from typing import Dict, Any, List, Optional
+
+from scoring import score_result
+
+
+# ============================================================
+# AMBANG BATAS METRIC BERSKALA
+# ============================================================
+#
+# Metric NGSSP terbagi dua jenis:
+#
+#   1. BINER  - Node Exporter Status, JVM Managed Server Status.
+#               Nilai val=0 berarti tidak tersedia. Aturannya
+#               membandingkan nilai dengan nol (R-NGSSP-01/02).
+#
+#   2. BERSKALA - CPU Utilization (rentang 0-100 persen).
+#               Nilai 0 justru berarti normal, sehingga aturannya
+#               TIDAK boleh membandingkan dengan nol, melainkan
+#               dengan sebuah AMBANG BATAS (threshold).
+#
+# PERHATIAN
+# ---------
+# Nilai di bawah ini masih berupa ASUMSI dan WAJIB disesuaikan
+# dengan standar ambang batas yang benar-benar berlaku di OCC
+# (lihat konfigurasi alerting pada Grafana atau dokumen SOP).
+# Nilai ambang merupakan ketentuan operasional, bukan sesuatu
+# yang dapat disimpulkan dari teks alert semata, dan perlu
+# dicantumkan sumbernya di dalam naskah.
+
+AMBANG_CPU_TINGGI = 80.0
 
 
 # ============================================================
@@ -150,12 +180,22 @@ def detect_stream(text: str) -> str:
         return "BWCE"
 
     # NGSSP
+    # Deteksi didasarkan pada STRUKTUR alert NGSSP, bukan pada
+    # daftar nama metric tertentu. Seluruh alert NGSSP berpola:
+    #
+    #     <nama metric> ~ <komponen> with val: <nilai>,
+    #     Issue start at: <waktu>
+    #
+    # Sebelumnya stream hanya dikenali bila metric-nya Node
+    # Exporter Status atau JVM Managed Server Status, sehingga
+    # metric lain (mis. CPU Utilization) terbaca UNKNOWN padahal
+    # jelas merupakan alert NGSSP. Dengan mengenali strukturnya,
+    # metric baru tetap terdeteksi sebagai NGSSP; bila belum ada
+    # aturan produksi yang cocok, hasilnya "tidak ada aturan
+    # aktif" (bukan UNKNOWN) sehingga celah aturan tetap terlihat.
     if (
-        (
-            "node exporter status" in lowered
-            or "jvm managed server status" in lowered
-        )
-        and "with val:" in lowered
+        "with val:" in lowered
+        and "issue start at:" in lowered
     ):
         return "NGSSP"
 
@@ -233,9 +273,14 @@ def scanner(text: str, stream: str) -> Dict[str, Any]:
 
     elif stream == "NGSSP":
 
+        # Nama metric tidak lagi dibatasi pada daftar tertentu,
+        # agar metric baru ikut terekstraksi. Pola yang dikenali:
+        # "- <nama metric> [alert] ~".
+        # Tanda hubung dikecualikan dari nama metric supaya regex
+        # tidak salah menangkap bila terdapat tanda hubung lain
+        # sebelum nama metric.
         metric_match = re.search(
-            r"-\s*(Node Exporter Status|JVM Managed Server Status)"
-            r"(?:\s+alert)?\s*~",
+            r"-\s*([^~\-]+?)(?:\s+alert)?\s*~",
             text,
             re.IGNORECASE,
         )
@@ -428,6 +473,23 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
                 parsed_data["metric_code"] = (
                     "JVM_MANAGED_SERVER_STATUS"
                 )
+
+            elif "cpu utilization" in metric_lower:
+                parsed_data["metric_code"] = (
+                    "CPU_UTILIZATION"
+                )
+
+            else:
+                # Metric NGSSP yang belum memiliki aturan produksi
+                # tetap diberi kode agar terekam sebagai fakta.
+                # Alert seperti ini akan menghasilkan "tidak ada
+                # aturan aktif", sehingga celah aturan mudah
+                # ditemukan saat pengujian.
+                parsed_data["metric_code"] = re.sub(
+                    r"[^A-Z0-9]+",
+                    "_",
+                    metric.upper(),
+                ).strip("_")
 
     # Normalisasi USSD
 
@@ -730,6 +792,49 @@ def evaluate_ngssp(
             ],
         }
 
+    # --------------------------------------------------------
+    # R-NGSSP-03
+    # CPU Utilization + val >= AMBANG_CPU_TINGGI
+    # --------------------------------------------------------
+    #
+    # Berbeda dengan R-NGSSP-01/02 yang menguji val = 0, aturan
+    # ini menguji pelampauan ambang batas karena CPU Utilization
+    # merupakan metric berskala persen.
+
+    if (
+        metric_code == "CPU_UTILIZATION"
+        and isinstance(value, (int, float))
+        and value >= AMBANG_CPU_TINGGI
+    ):
+
+        return {
+            "condition":
+                "NGSSP_CPU_HIGH",
+
+            "hasil_pembacaan":
+                f"Penggunaan CPU pada {component} "
+                f"teridentifikasi tinggi, yaitu "
+                f"{value:.2f}%.",
+
+            "alasan_pembacaan":
+                f"Alert CPU Utilization memiliki nilai val="
+                f"{value:.2f}, telah mencapai atau melampaui "
+                f"ambang batas {AMBANG_CPU_TINGGI:.0f}%.",
+
+            "rekomendasi":
+                f"Periksa beban proses pada {component}, "
+                f"identifikasi proses dengan konsumsi CPU "
+                f"tertinggi, evaluasi kapasitas serta tren "
+                f"penggunaan, kemudian informasikan kepada "
+                f"{team}.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-NGSSP-03"
+            ],
+        }
+
     return unknown_output(
         reason=(
             "Pola NGSSP tidak memenuhi aturan produksi "
@@ -986,7 +1091,7 @@ def process_alert(text: str) -> Dict[str, Any]:
             )
         )
 
-        return {
+        return score_result({
             "stream": "UNKNOWN",
 
             "hasil_pembacaan":
@@ -1026,7 +1131,7 @@ def process_alert(text: str) -> Dict[str, Any]:
             "facts": [],
 
             "raw_text": text,
-        }
+        })
 
     # --------------------------------------------------------
     # SCANNER
@@ -1066,7 +1171,7 @@ def process_alert(text: str) -> Dict[str, Any]:
     # OUTPUT
     # --------------------------------------------------------
 
-    return {
+    return score_result({
         "stream": stream,
 
         # Output utama penelitian
@@ -1110,7 +1215,7 @@ def process_alert(text: str) -> Dict[str, Any]:
 
         "raw_text":
             text,
-    }
+    })
 
 
 # ============================================================
@@ -1129,6 +1234,7 @@ def get_all_conditions():
         "BWCE_SR_DEGRADED_TE",
         "NGSSP_NODE_EXPORTER_UNAVAILABLE",
         "NGSSP_MANAGED_SERVER_UNAVAILABLE",
+        "NGSSP_CPU_HIGH",
         "USSD_PROCESS_NOT_RUNNING",
         "USSD_ERROR_DETECTED",
         "CRM_SERVICE_UNAVAILABLE",

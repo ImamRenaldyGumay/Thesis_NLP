@@ -44,6 +44,26 @@ from database import (
 
 from chatbot import chatbot_response
 
+from labeling import (
+    init_labeling_db,
+    save_label,
+    revise_label,
+    get_label_by_id,
+    delete_label,
+    delete_all_labels,
+    get_all_labels,
+    count_labels,
+    label_statistics,
+    import_labels_from_dataframe,
+    validate_label,
+    build_template_excel,
+    build_template_csv,
+    LABEL_STREAM_OPTIONS,
+    LABEL_RULE_OPTIONS,
+    VALID_RULE_BY_STREAM,
+    LABEL_GUIDE,
+)
+
 
 # ============================================================
 # KONFIGURASI APLIKASI
@@ -56,6 +76,7 @@ st.set_page_config(
 )
 
 init_db()
+init_labeling_db()
 
 
 # ============================================================
@@ -196,6 +217,10 @@ RULE_REFERENCE = {
             "R-NGSSP-02",
             "JVM Managed Server Status AND val = 0",
         ),
+        (
+            "R-NGSSP-03",
+            "CPU Utilization AND val >= ambang batas",
+        ),
     ],
 
     "USSD": [
@@ -304,6 +329,8 @@ st.divider()
     tab_upload,
     tab_database,
     tab_dashboard,
+    tab_pelabelan,
+    tab_evaluasi,
     tab_chatbot,
 ) = st.tabs(
     [
@@ -311,6 +338,8 @@ st.divider()
         "📁 Upload Dataset",
         "🗄️ Database",
         "📈 Dashboard",
+        "🏷️ Pelabelan",
+        "🧪 Pengujian",
         "💬 Chatbot",
     ]
 )
@@ -321,6 +350,26 @@ st.divider()
 # ============================================================
 
 with tab_single:
+
+    # --------------------------------------------------------
+    # RESET FORM
+    # --------------------------------------------------------
+    # Pembersihan dilakukan di AWAL tab, sebelum widget dibuat.
+    # Streamlit tidak mengizinkan pengubahan state widget setelah
+    # widget terbentuk, sehingga tombol reset cukup menyalakan
+    # penanda ini lalu memicu rerun.
+
+    if st.session_state.get("single_alert_pending_reset"):
+
+        for kunci in (
+            "analysis_result",
+            "analysis_input",
+            "analysis_saved",
+            "single_alert_input",
+        ):
+            st.session_state.pop(kunci, None)
+
+        st.session_state["single_alert_pending_reset"] = False
 
     st.header("🔍 Analisis Single Alert")
 
@@ -335,6 +384,17 @@ with tab_single:
         """
     )
 
+    # Pemberitahuan hasil simpan dari proses sebelumnya.
+    if st.session_state.get("single_alert_last_saved_id"):
+
+        st.success(
+            f"Hasil sebelumnya tersimpan ke database dengan ID "
+            f"{st.session_state['single_alert_last_saved_id']}. "
+            "Form telah dikosongkan, silakan masukkan alert berikutnya."
+        )
+
+        st.session_state["single_alert_last_saved_id"] = None
+
     raw_text = st.text_area(
         "Masukkan teks alert:",
         height=220,
@@ -342,11 +402,28 @@ with tab_single:
         key="single_alert_input",
     )
 
-    if st.button(
-        "🚀 Proses Alert",
-        type="primary",
-        use_container_width=True,
-    ):
+    tombol_proses, tombol_reset = st.columns([3, 1])
+
+    with tombol_proses:
+        proses_ditekan = st.button(
+            "🚀 Proses Alert",
+            type="primary",
+            use_container_width=True,
+        )
+
+    with tombol_reset:
+        if st.button(
+            "🔄 Alert Baru",
+            use_container_width=True,
+            help=(
+                "Mengosongkan teks dan hasil analisis, "
+                "siap untuk alert berikutnya."
+            ),
+        ):
+            st.session_state["single_alert_pending_reset"] = True
+            st.rerun()
+
+    if proses_ditekan:
 
         if not raw_text.strip():
 
@@ -851,39 +928,31 @@ with tab_single:
 
         st.header("💾 Simpan Hasil Pemrosesan")
 
-        if st.session_state.get(
-            "analysis_saved",
-            False,
+        st.caption(
+            "Setelah disimpan, form otomatis dikosongkan agar siap "
+            "menerima alert berikutnya."
+        )
+
+        if st.button(
+            "💾 Simpan ke Database",
+            use_container_width=True,
         ):
 
-            st.success(
-                "Hasil pemrosesan sudah disimpan "
-                "ke database."
+            result_to_save = result.copy()
+
+            result_to_save["raw_text"] = (
+                analysis_input
             )
 
-        else:
+            alert_id = save_alert(result_to_save)
 
-            if st.button(
-                "💾 Simpan ke Database",
-                use_container_width=True,
-            ):
+            # Alert ini sudah selesai diurus, sehingga form
+            # dikosongkan otomatis agar siap menerima alert
+            # berikutnya tanpa perlu menghapus manual.
+            st.session_state["single_alert_last_saved_id"] = alert_id
+            st.session_state["single_alert_pending_reset"] = True
 
-                result_to_save = result.copy()
-
-                result_to_save["raw_text"] = (
-                    analysis_input
-                )
-
-                alert_id = save_alert(result_to_save)
-
-                st.session_state["analysis_saved"] = True
-
-                st.success(
-                    f"Hasil berhasil disimpan "
-                    f"dengan ID {alert_id}."
-                )
-
-                st.rerun()
+            st.rerun()
 
 
 # ============================================================
@@ -1555,3 +1624,894 @@ with tab_chatbot:
                     "Chatbot gagal memproses "
                     f"pertanyaan: {error}"
                 )
+
+# ============================================================
+# 5. PENGUJIAN (AKURASI + PEMBOBOTAN NLP)
+# ============================================================
+
+with tab_evaluasi:
+
+    st.header("🧪 Pengujian Model Rule-Based NLP")
+
+    st.write(
+        """
+        Menu ini mengukur performa model dengan membandingkan
+        keluaran model terhadap **label kebenaran (ground truth)**
+        pada dataset berlabel.
+
+        Metrik yang dihitung: **akurasi**, precision, recall,
+        F1-score, confusion matrix, serta rata-rata
+        **skor kepercayaan (pembobotan NLP)** pada prediksi
+        benar vs salah.
+
+        Format dataset (CSV/Excel) memerlukan kolom:
+        `text`, `label_stream`, `label_rule`
+        (isi `label_rule` dengan kode aturan seperti `R-BWCE-01`
+        atau `NONE` bila tidak ada aturan yang seharusnya aktif).
+        """
+    )
+
+    sumber = st.radio(
+        "Sumber data uji:",
+        options=[
+            "Dataset berlabel dari database (menu Pelabelan)",
+            "Upload file berlabel",
+        ],
+        key="eval_sumber",
+    )
+
+    eval_df = None
+
+    # --------------------------------------------------------
+    # SUMBER: DATABASE
+    # --------------------------------------------------------
+
+    if sumber.startswith("Dataset berlabel dari database"):
+
+        eval_df = get_all_labels()
+
+        if eval_df.empty:
+
+            st.info(
+                "Belum ada data berlabel di database. Silakan labeli "
+                "alert terlebih dahulu pada menu 🏷️ Pelabelan, atau "
+                "pilih opsi upload file."
+            )
+
+            eval_df = None
+
+        else:
+
+            st.success(
+                f"Menggunakan **{len(eval_df)}** alert berlabel "
+                "dari database."
+            )
+
+    # --------------------------------------------------------
+    # SUMBER: UPLOAD
+    # --------------------------------------------------------
+
+    else:
+
+        eval_file = st.file_uploader(
+            "Upload dataset berlabel (CSV atau Excel):",
+            type=["csv", "xlsx"],
+            key="eval_upload",
+        )
+
+        if eval_file is not None:
+
+            try:
+                eval_df = read_uploaded_file(eval_file)
+            except Exception as error:
+                st.error(f"Gagal membaca file: {error}")
+                eval_df = None
+
+    if eval_df is not None:
+
+        st.subheader("Preview Dataset Uji")
+        st.dataframe(
+            eval_df.head(10),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        columns = eval_df.columns.tolist()
+
+        col_a, col_b, col_c = st.columns(3)
+
+        with col_a:
+            text_col = st.selectbox(
+                "Kolom teks alert:",
+                options=columns,
+                index=columns.index("text") if "text" in columns else 0,
+            )
+
+        with col_b:
+            stream_col = st.selectbox(
+                "Kolom label stream:",
+                options=columns,
+                index=(
+                    columns.index("label_stream")
+                    if "label_stream" in columns
+                    else 0
+                ),
+            )
+
+        with col_c:
+            rule_col = st.selectbox(
+                "Kolom label aturan:",
+                options=columns,
+                index=(
+                    columns.index("label_rule")
+                    if "label_rule" in columns
+                    else 0
+                ),
+            )
+
+        if st.button(
+            "🚀 Jalankan Pengujian",
+            type="primary",
+            use_container_width=True,
+        ):
+
+            from evaluation import evaluate_dataframe
+
+            hasil = evaluate_dataframe(
+                eval_df,
+                text_col=text_col,
+                stream_col=stream_col,
+                rule_col=rule_col,
+            )
+
+            st.subheader("📊 Ringkasan Akurasi")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(
+                "Akurasi Stream",
+                f"{hasil['akurasi_stream'] * 100:.2f}%",
+            )
+            m2.metric(
+                "Akurasi Aturan",
+                f"{hasil['akurasi_rule'] * 100:.2f}%",
+            )
+            m3.metric(
+                "Data Uji",
+                f"{hasil['n']}",
+            )
+
+            # Bila sebagian label direvisi setelah pelabel melihat
+            # keluaran model, akurasi pada label yang tidak direvisi
+            # dilaporkan terpisah sebagai estimasi konservatif.
+            if hasil.get("n_direvisi"):
+
+                st.warning(
+                    f"⚠️ **{hasil['n_direvisi']} dari {hasil['n']}** label "
+                    "direvisi setelah pelabel melihat keluaran model, "
+                    "sehingga tidak sepenuhnya independen."
+                )
+
+                if hasil.get("akurasi_rule_murni") is not None:
+
+                    st.write(
+                        f"Akurasi pada **{hasil['n_murni']}** label yang "
+                        "**tidak direvisi** (estimasi lebih konservatif, "
+                        "angka inilah yang sebaiknya dilaporkan di naskah):"
+                    )
+
+                    k1, k2 = st.columns(2)
+                    k1.metric(
+                        "Akurasi Stream (murni)",
+                        f"{hasil['akurasi_stream_murni'] * 100:.2f}%",
+                    )
+                    k2.metric(
+                        "Akurasi Aturan (murni)",
+                        f"{hasil['akurasi_rule_murni'] * 100:.2f}%",
+                    )
+
+            st.subheader("🎯 Metrik Prediksi Aturan (per kelas)")
+            rule_metric_df = pd.DataFrame(
+                hasil["rule_per_class"]
+            ).T.reset_index().rename(columns={"index": "aturan"})
+            st.dataframe(
+                rule_metric_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            mac = hasil["rule_macro"]
+            st.caption(
+                f"Macro-average — precision: {mac['precision']:.4f} | "
+                f"recall: {mac['recall']:.4f} | f1: {mac['f1']:.4f}"
+            )
+
+            st.subheader("🔀 Confusion Matrix — Aturan")
+            st.dataframe(
+                hasil["rule_confusion"],
+                use_container_width=True,
+            )
+
+            st.subheader("🔀 Confusion Matrix — Stream")
+            st.dataframe(
+                hasil["stream_confusion"],
+                use_container_width=True,
+            )
+
+            st.subheader("⚖️ Pembobotan / Skor Kepercayaan NLP")
+            s1, s2 = st.columns(2)
+            s1.metric(
+                "Rata-rata skor (prediksi BENAR)",
+                f"{hasil['skor_rata_benar'] * 100:.2f}%",
+            )
+            s2.metric(
+                "Rata-rata skor (prediksi SALAH)",
+                f"{hasil['skor_rata_salah'] * 100:.2f}%",
+            )
+            st.caption(
+                "Skor kepercayaan pada prediksi benar diharapkan "
+                "lebih tinggi daripada prediksi salah."
+            )
+
+            st.subheader("📋 Detail Per Baris")
+            st.dataframe(
+                hasil["detail"],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.download_button(
+                "⬇️ Download Hasil Pengujian (CSV)",
+                data=hasil["detail"].to_csv(index=False).encode("utf-8"),
+                file_name="hasil_pengujian.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    elif sumber == "Upload file berlabel":
+        st.info(
+            "Unggah dataset berlabel untuk memulai pengujian. "
+            "Template pengisiannya dapat diunduh di menu 🏷️ Pelabelan."
+        )
+
+
+# ============================================================
+# 7. PELABELAN (GROUND TRUTH)
+# ============================================================
+
+with tab_pelabelan:
+
+    st.header("🏷️ Pelabelan Alert (Ground Truth)")
+
+    st.write(
+        """
+        Menu ini digunakan untuk membuat **label kebenaran
+        (ground truth)** yang menjadi dasar pengujian akurasi.
+
+        Label diisi berdasarkan **penilaian manusia** (personel OCC),
+        yaitu kondisi apa yang sebenarnya terjadi pada alert tersebut
+        dan bagaimana seharusnya alert itu ditangani.
+        """
+    )
+
+    st.warning(
+        "⚠️ **Penting:** labeli berdasarkan penilaian Anda sendiri, "
+        "**bukan** dengan melihat keluaran program. Label yang diambil "
+        "dari hasil model membuat pengujian menjadi melingkar "
+        "(model diuji dengan jawabannya sendiri) sehingga akurasinya "
+        "tidak bermakna. Karena itu menu ini sengaja **tidak** "
+        "menampilkan prediksi model saat Anda melabeli."
+    )
+
+    total_label = count_labels()
+
+    st.info(f"Jumlah alert yang sudah dilabeli: **{total_label}**")
+
+    # --------------------------------------------------------
+    # UNDUH TEMPLATE
+    # --------------------------------------------------------
+
+    st.subheader("📥 Contoh / Template Pelabelan")
+
+    st.write(
+        """
+        Unduh file contoh berikut sebagai acuan format. File Excel
+        berisi 3 sheet: **template** (baris contoh), **panduan_label**
+        (definisi tiap label), dan **petunjuk** (aturan pengisian).
+
+        Hapus baris contoh di dalamnya, lalu ganti dengan **alert asli**
+        yang Anda labeli sendiri.
+        """
+    )
+
+    unduh_1, unduh_2 = st.columns(2)
+
+    with unduh_1:
+        st.download_button(
+            "⬇️ Download Template Excel (.xlsx)",
+            data=build_template_excel(),
+            file_name="template_pelabelan.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument"
+                ".spreadsheetml.sheet"
+            ),
+            use_container_width=True,
+        )
+
+    with unduh_2:
+        st.download_button(
+            "⬇️ Download Template CSV (.csv)",
+            data=build_template_csv(),
+            file_name="template_pelabelan.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with st.expander("📖 Lihat panduan label"):
+
+        for label, penjelasan in LABEL_GUIDE.items():
+            st.markdown(f"**{label}** — {penjelasan}")
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # MODE PELABELAN
+    # --------------------------------------------------------
+
+    mode = st.radio(
+        "Pilih cara pelabelan:",
+        options=[
+            "Satu per satu (1-1)",
+            "Batch (upload file)",
+        ],
+        horizontal=True,
+        key="mode_pelabelan",
+    )
+
+    # ========================================================
+    # MODE 1-1
+    # ========================================================
+
+    if mode == "Satu per satu (1-1)":
+
+        # Pengosongan form dilakukan di awal, sebelum widget dibuat.
+        if st.session_state.get("pelabelan_pending_reset"):
+
+            for kunci in (
+                "label_text_input",
+                "label_stream_input",
+                "label_rule_input",
+                "catatan_input",
+            ):
+                st.session_state.pop(kunci, None)
+
+            st.session_state["pelabelan_pending_reset"] = False
+
+        st.subheader("✍️ Pelabelan Satu per Satu")
+
+        st.caption(
+            "Prosedur dua tahap — **Tahap 1:** Anda menentukan label "
+            "tanpa melihat keluaran model. **Tahap 2:** setelah label "
+            "tersimpan, keluaran model ditampilkan sebagai pembanding. "
+            "Urutan ini menjaga label tetap independen sehingga akurasi "
+            "yang dihitung nanti bermakna."
+        )
+
+        # ----------------------------------------------------
+        # TAHAP 2 — PEMBANDING (setelah label tersimpan)
+        # ----------------------------------------------------
+
+        tersimpan_id = st.session_state.get("label_tersimpan_id")
+
+        if tersimpan_id:
+
+            baris = get_label_by_id(tersimpan_id)
+
+            if baris:
+
+                st.success(
+                    f"✅ Tahap 1 selesai — label tersimpan "
+                    f"(ID: {tersimpan_id})."
+                )
+
+                st.markdown("#### 🔍 Tahap 2 — Pembanding: Jawaban Model")
+
+                hasil_model = process_alert(baris["raw_text"])
+
+                model_stream = hasil_model.get("stream", "UNKNOWN")
+                model_aturan = hasil_model.get("aturan_aktif", [])
+                model_rule = model_aturan[0] if model_aturan else "NONE"
+
+                cocok_stream = model_stream == baris["label_stream"]
+                cocok_rule = model_rule == baris["label_rule"]
+
+                banding = pd.DataFrame([
+                    {
+                        "aspek": "Stream",
+                        "label_anda": baris["label_stream"],
+                        "jawaban_model": model_stream,
+                        "sepakat": "✅" if cocok_stream else "❌",
+                    },
+                    {
+                        "aspek": "Aturan",
+                        "label_anda": baris["label_rule"],
+                        "jawaban_model": model_rule,
+                        "sepakat": "✅" if cocok_rule else "❌",
+                    },
+                ])
+
+                st.dataframe(
+                    banding,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                if cocok_stream and cocok_rule:
+
+                    st.info(
+                        "Model sepakat dengan label Anda. "
+                        "Lanjutkan ke alert berikutnya."
+                    )
+
+                else:
+
+                    st.warning(
+                        "**Model tidak sepakat dengan label Anda.** "
+                        "Ini justru temuan yang berharga — bisa berarti "
+                        "model keliru (bahan analisis kesalahan di bab "
+                        "pengujian), atau Anda yang keliru membaca teks. "
+                        "Bila model yang keliru, **biarkan label Anda "
+                        "apa adanya** — ketidaksepakatan inilah yang "
+                        "diukur oleh pengujian."
+                    )
+
+                with st.expander("Lihat penjelasan lengkap dari model"):
+
+                    st.write(
+                        f"**Pembacaan:** "
+                        f"{hasil_model.get('hasil_pembacaan', '-')}"
+                    )
+                    st.write(
+                        f"**Alasan:** "
+                        f"{hasil_model.get('alasan_pembacaan', '-')}"
+                    )
+                    st.write(
+                        f"**Skor kepercayaan:** "
+                        f"{hasil_model.get('persen_kepercayaan', '-')}"
+                    )
+
+                aksi_1, aksi_2 = st.columns(2)
+
+                with aksi_1:
+                    if st.button(
+                        "➡️ Lanjut ke Alert Berikutnya",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        st.session_state["label_tersimpan_id"] = None
+                        st.session_state["tampilkan_revisi"] = False
+                        st.session_state["pelabelan_pending_reset"] = True
+                        st.rerun()
+
+                with aksi_2:
+                    if st.button(
+                        "✏️ Revisi Label Ini",
+                        use_container_width=True,
+                        help=(
+                            "Hanya bila Anda menyadari kekeliruan Anda "
+                            "sendiri, misalnya salah membaca teks alert. "
+                            "Bukan untuk menyamakan label dengan model."
+                        ),
+                    ):
+                        st.session_state["tampilkan_revisi"] = True
+
+                # ------------------------------------------------
+                # FORM REVISI
+                # ------------------------------------------------
+
+                if st.session_state.get("tampilkan_revisi"):
+
+                    st.markdown("##### ✏️ Revisi Label")
+
+                    st.caption(
+                        "⚠️ Revisi dicatat secara terbuka: label awal "
+                        "Anda tetap tersimpan, baris ditandai "
+                        "`direvisi`, dan menu Pengujian akan melaporkan "
+                        "akurasi pada label yang tidak direvisi secara "
+                        "terpisah. Revisi hanya sah bila Anda memperbaiki "
+                        "kekeliruan Anda sendiri — bukan mengikuti model."
+                    )
+
+                    rev_1, rev_2 = st.columns(2)
+
+                    with rev_1:
+                        rev_stream = st.selectbox(
+                            "Label stream (revisi):",
+                            options=LABEL_STREAM_OPTIONS,
+                            index=LABEL_STREAM_OPTIONS.index(
+                                baris["label_stream"]
+                            ),
+                            key="rev_stream",
+                        )
+
+                    with rev_2:
+                        opsi_rev = VALID_RULE_BY_STREAM.get(
+                            rev_stream,
+                            LABEL_RULE_OPTIONS,
+                        )
+
+                        rev_rule = st.selectbox(
+                            "Label aturan (revisi):",
+                            options=opsi_rev,
+                            key="rev_rule",
+                        )
+
+                    alasan_rev = st.text_input(
+                        "Alasan revisi (wajib):",
+                        key="alasan_rev",
+                        placeholder=(
+                            "mis. saya salah membaca nilai val pada teks"
+                        ),
+                    )
+
+                    if st.button(
+                        "💾 Simpan Revisi",
+                        use_container_width=True,
+                    ):
+
+                        error_rev = revise_label(
+                            row_id=tersimpan_id,
+                            label_stream_baru=rev_stream,
+                            label_rule_baru=rev_rule,
+                            alasan_revisi=alasan_rev,
+                        )
+
+                        if error_rev:
+                            st.error(error_rev)
+                        else:
+                            st.success(
+                                "Revisi tersimpan dan tercatat "
+                                "secara transparan."
+                            )
+                            st.session_state["tampilkan_revisi"] = False
+                            st.rerun()
+
+        # ----------------------------------------------------
+        # TAHAP 1 — PELABELAN BUTA
+        # ----------------------------------------------------
+
+        else:
+
+            st.markdown("#### 🏷️ Tahap 1 — Tentukan Label Anda")
+
+            label_text = st.text_area(
+                "Teks alert asli:",
+                height=180,
+                key="label_text_input",
+                placeholder="Tempel satu teks alert di sini...",
+            )
+
+            kol_1, kol_2 = st.columns(2)
+
+            with kol_1:
+                pilih_stream = st.selectbox(
+                    "Label stream (menurut Anda):",
+                    options=LABEL_STREAM_OPTIONS,
+                    key="label_stream_input",
+                )
+
+            with kol_2:
+                # Pilihan aturan dibatasi sesuai stream yang dipilih
+                # agar label tetap konsisten.
+                opsi_rule = VALID_RULE_BY_STREAM.get(
+                    pilih_stream,
+                    LABEL_RULE_OPTIONS,
+                )
+
+                pilih_rule = st.selectbox(
+                    "Label aturan (menurut Anda):",
+                    options=opsi_rule,
+                    key="label_rule_input",
+                )
+
+            st.caption(
+                f"ℹ️ {LABEL_GUIDE.get(pilih_rule, '')}"
+            )
+
+            kol_3, kol_4 = st.columns(2)
+
+            with kol_3:
+                nama_pelabel = st.text_input(
+                    "Nama/inisial pelabel:",
+                    key="pelabel_input",
+                    placeholder="mis. IRG",
+                    help=(
+                        "Diisi bila pelabelan dilakukan lebih dari satu "
+                        "orang, untuk keperluan uji kesepakatan (Kappa)."
+                    ),
+                )
+
+            with kol_4:
+                catatan_label = st.text_input(
+                    "Catatan (opsional):",
+                    key="catatan_input",
+                    placeholder="mis. format tidak biasa, sempat ragu",
+                )
+
+            if st.button(
+                "💾 Simpan Label & Lihat Jawaban Model",
+                type="primary",
+                use_container_width=True,
+            ):
+
+                if not label_text.strip():
+
+                    st.warning("Teks alert belum diisi.")
+
+                else:
+
+                    error = validate_label(pilih_stream, pilih_rule)
+
+                    if error:
+
+                        st.error(error)
+
+                    else:
+
+                        try:
+
+                            row_id = save_label(
+                                raw_text=label_text.strip(),
+                                label_stream=pilih_stream,
+                                label_rule=pilih_rule,
+                                pelabel=nama_pelabel.strip(),
+                                catatan=catatan_label.strip(),
+                            )
+
+                            st.session_state["label_tersimpan_id"] = row_id
+                            st.session_state["tampilkan_revisi"] = False
+                            st.rerun()
+
+                        except Exception as error:
+
+                            st.error(f"Gagal menyimpan label: {error}")
+
+    # ========================================================
+    # MODE BATCH
+    # ========================================================
+
+    else:
+
+        st.subheader("📦 Pelabelan Batch (Upload File)")
+
+        st.write(
+            """
+            Unggah file CSV/Excel yang **sudah Anda isi labelnya**
+            (gunakan template di atas). Baris dengan label yang tidak
+            valid akan dilewati dan dilaporkan, tidak disimpan diam-diam.
+            """
+        )
+
+        label_file = st.file_uploader(
+            "Upload file berlabel (CSV atau Excel):",
+            type=["csv", "xlsx"],
+            key="label_batch_upload",
+        )
+
+        if label_file is not None:
+
+            try:
+                batch_df = read_uploaded_file(label_file)
+            except Exception as error:
+                st.error(f"Gagal membaca file: {error}")
+                st.stop()
+
+            st.write(f"Jumlah baris: **{len(batch_df)}**")
+
+            st.dataframe(
+                batch_df.head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            kolom_batch = batch_df.columns.tolist()
+
+            b1, b2, b3 = st.columns(3)
+
+            with b1:
+                b_text = st.selectbox(
+                    "Kolom teks alert:",
+                    options=kolom_batch,
+                    index=(
+                        kolom_batch.index("text")
+                        if "text" in kolom_batch
+                        else 0
+                    ),
+                    key="b_text",
+                )
+
+            with b2:
+                b_stream = st.selectbox(
+                    "Kolom label stream:",
+                    options=kolom_batch,
+                    index=(
+                        kolom_batch.index("label_stream")
+                        if "label_stream" in kolom_batch
+                        else 0
+                    ),
+                    key="b_stream",
+                )
+
+            with b3:
+                b_rule = st.selectbox(
+                    "Kolom label aturan:",
+                    options=kolom_batch,
+                    index=(
+                        kolom_batch.index("label_rule")
+                        if "label_rule" in kolom_batch
+                        else 0
+                    ),
+                    key="b_rule",
+                )
+
+            opsi_pelabel = ["(tidak ada)"] + kolom_batch
+
+            b_pelabel = st.selectbox(
+                "Kolom pelabel (opsional):",
+                options=opsi_pelabel,
+                index=(
+                    opsi_pelabel.index("pelabel")
+                    if "pelabel" in opsi_pelabel
+                    else 0
+                ),
+                key="b_pelabel",
+            )
+
+            if st.button(
+                "📥 Import Label",
+                type="primary",
+                use_container_width=True,
+            ):
+
+                hasil_import = import_labels_from_dataframe(
+                    batch_df,
+                    text_col=b_text,
+                    stream_col=b_stream,
+                    rule_col=b_rule,
+                    pelabel_col=(
+                        None
+                        if b_pelabel == "(tidak ada)"
+                        else b_pelabel
+                    ),
+                )
+
+                st.success(
+                    f"{hasil_import['tersimpan']} label berhasil diimpor."
+                )
+
+                if hasil_import["dilewati"]:
+
+                    st.warning(
+                        f"{hasil_import['dilewati']} baris dilewati "
+                        "karena label tidak valid:"
+                    )
+
+                    st.dataframe(
+                        pd.DataFrame(hasil_import["kesalahan"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # DAFTAR LABEL TERSIMPAN
+    # --------------------------------------------------------
+
+    st.subheader("📋 Data Berlabel Tersimpan")
+
+    label_df = get_all_labels()
+
+    if label_df.empty:
+
+        st.info(
+            "Belum ada data berlabel. Silakan labeli alert "
+            "menggunakan salah satu mode di atas."
+        )
+
+    else:
+
+        statistik = label_statistics()
+
+        s1, s2, s3, s4 = st.columns(4)
+
+        s1.metric("Total Berlabel", statistik["total"])
+        s2.metric(
+            "Jumlah Stream",
+            len(statistik["per_stream"]),
+        )
+        s3.metric(
+            "Jumlah Pelabel",
+            statistik["jumlah_pelabel"],
+        )
+        s4.metric(
+            "Direvisi",
+            f"{statistik['jumlah_direvisi']} "
+            f"({statistik['persen_direvisi']}%)",
+            help=(
+                "Label yang diubah setelah pelabel melihat keluaran "
+                "model. Semakin kecil semakin baik. Bila angkanya besar, "
+                "pengujian berisiko terpengaruh model."
+            ),
+        )
+
+        if statistik["persen_direvisi"] > 20:
+            st.warning(
+                f"⚠️ {statistik['persen_direvisi']}% label direvisi "
+                "setelah melihat keluaran model. Proporsi setinggi ini "
+                "membuat label kurang independen. Pertimbangkan melabeli "
+                "ulang sampel baru tanpa revisi, atau laporkan angka "
+                "akurasi pada label yang tidak direvisi saja."
+            )
+
+        st.dataframe(
+            label_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption("Sebaran label aturan:")
+        st.write(statistik["per_rule"])
+
+        st.download_button(
+            "⬇️ Download Dataset Berlabel (CSV)",
+            data=label_df[
+                ["text", "label_stream", "label_rule", "pelabel"]
+            ].to_csv(index=False).encode("utf-8"),
+            file_name="dataset_berlabel.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Dataset ini otomatis tersedia di menu 🧪 Pengujian "
+            "melalui pilihan sumber data 'Dataset berlabel dari database'."
+        )
+
+        # ----------------------------------------------------
+        # HAPUS LABEL
+        # ----------------------------------------------------
+
+        with st.expander("🗑️ Hapus Data Label"):
+
+            hapus_id = st.number_input(
+                "ID label yang akan dihapus:",
+                min_value=1,
+                step=1,
+                key="hapus_label_id",
+            )
+
+            h1, h2 = st.columns(2)
+
+            with h1:
+                if st.button(
+                    "Hapus Label Ini",
+                    use_container_width=True,
+                ):
+                    delete_label(int(hapus_id))
+                    st.success(f"Label ID {hapus_id} dihapus.")
+                    st.rerun()
+
+            with h2:
+                konfirmasi = st.checkbox(
+                    "Saya yakin ingin menghapus SEMUA label",
+                    key="konfirmasi_hapus_label",
+                )
+
+                if st.button(
+                    "Hapus Semua Label",
+                    use_container_width=True,
+                    disabled=not konfirmasi,
+                ):
+                    delete_all_labels()
+                    st.success("Seluruh data label dihapus.")
+                    st.rerun()

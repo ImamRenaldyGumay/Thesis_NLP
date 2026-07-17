@@ -88,6 +88,11 @@ RULE_KB = {
         "dengan nilai val=0."
     ),
 
+    "R-NGSSP-03": (
+        "Alert NGSSP memiliki metric CPU Utilization dengan "
+        "nilai val yang mencapai atau melampaui ambang batas."
+    ),
+
     "R-USSD-01": (
         "Detail alert USSD mengandung pola "
         "'Process is not running'."
