@@ -221,6 +221,10 @@ RULE_REFERENCE = {
             "R-NGSSP-03",
             "CPU Utilization AND val >= ambang batas",
         ),
+        (
+            "R-NGSSP-04",
+            "Stuck Thread AND val >= ambang batas",
+        ),
     ],
 
     "USSD": [

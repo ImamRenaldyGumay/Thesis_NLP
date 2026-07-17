@@ -81,6 +81,7 @@ LABEL_RULE_OPTIONS = [
     "R-NGSSP-01",
     "R-NGSSP-02",
     "R-NGSSP-03",
+    "R-NGSSP-04",
     "R-USSD-01",
     "R-USSD-02",
     "R-CRM-01",
@@ -90,7 +91,13 @@ LABEL_RULE_OPTIONS = [
 # Dipakai untuk validasi konsistensi label.
 VALID_RULE_BY_STREAM = {
     "BWCE": ["NONE", "R-BWCE-01"],
-    "NGSSP": ["NONE", "R-NGSSP-01", "R-NGSSP-02", "R-NGSSP-03"],
+    "NGSSP": [
+        "NONE",
+        "R-NGSSP-01",
+        "R-NGSSP-02",
+        "R-NGSSP-03",
+        "R-NGSSP-04",
+    ],
     "USSD": ["NONE", "R-USSD-01", "R-USSD-02"],
     "CRM": ["NONE", "R-CRM-01"],
     "UNKNOWN": ["NONE"],
@@ -113,6 +120,10 @@ LABEL_GUIDE = {
     "R-NGSSP-03": (
         "Alert NGSSP metric CPU Utilization dengan nilai val "
         "mencapai atau melampaui ambang batas."
+    ),
+    "R-NGSSP-04": (
+        "Alert NGSSP metric Stuck Thread dengan jumlah thread "
+        "macet mencapai atau melampaui ambang batas."
     ),
     "R-USSD-01": (
         "Alert USSD dengan detail 'Process is not running'."

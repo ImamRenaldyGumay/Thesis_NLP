@@ -61,6 +61,16 @@ def _f(facts_dict: Dict[str, Any], key: str, default=None):
     return facts_dict.get(key, default)
 
 
+def _ambang_stuck_thread() -> float:
+    """
+    Mengambil ambang batas stuck thread dari rules.py.
+    Import di dalam fungsi, alasannya sama dengan _ambang_cpu().
+    """
+    from rules import AMBANG_STUCK_THREAD
+
+    return AMBANG_STUCK_THREAD
+
+
 def _ambang_cpu() -> float:
     """
     Mengambil ambang batas CPU dari rules.py.
@@ -153,6 +163,23 @@ RULE_FEATURE_WEIGHTS = {
     ],
 
     # --------------------------------------------------------
+    # R-NGSSP-04 : Stuck Thread melampaui ambang batas
+    # --------------------------------------------------------
+    "R-NGSSP-04": [
+        (
+            "Metric = Stuck Thread",
+            lambda f: _f(f, "METRIC_CODE") == "STUCK_THREAD",
+            0.55,
+        ),
+        (
+            "Jumlah stuck thread mencapai/melampaui ambang batas",
+            lambda f: isinstance(_f(f, "VALUE"), (int, float))
+            and _f(f, "VALUE") >= _ambang_stuck_thread(),
+            0.45,
+        ),
+    ],
+
+    # --------------------------------------------------------
     # R-USSD-01 : Process is not running
     # --------------------------------------------------------
     "R-USSD-01": [
@@ -220,7 +247,12 @@ RULE_FEATURE_WEIGHTS = {
 # Aturan yang menjadi kandidat untuk tiap stream.
 STREAM_RULES = {
     "BWCE": ["R-BWCE-01"],
-    "NGSSP": ["R-NGSSP-01", "R-NGSSP-02", "R-NGSSP-03"],
+    "NGSSP": [
+        "R-NGSSP-01",
+        "R-NGSSP-02",
+        "R-NGSSP-03",
+        "R-NGSSP-04",
+    ],
     "USSD": ["R-USSD-01", "R-USSD-02"],
     "CRM": ["R-CRM-01"],
 }

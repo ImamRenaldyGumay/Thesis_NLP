@@ -18,6 +18,7 @@ Basis Aturan Produksi:
     R-NGSSP-01 : Node Exporter Status dengan val = 0
     R-NGSSP-02 : JVM Managed Server Status dengan val = 0
     R-NGSSP-03 : CPU Utilization dengan val >= ambang batas
+    R-NGSSP-04 : Stuck Thread dengan val >= ambang batas
     R-USSD-01  : Process is not running
     R-USSD-02  : Errors found
     R-CRM-01   : Service DOWN
@@ -72,6 +73,17 @@ from scoring import score_result
 # dicantumkan sumbernya di dalam naskah.
 
 AMBANG_CPU_TINGGI = 80.0
+
+# Stuck thread merupakan metric BERSKALA berupa CACAH (jumlah
+# thread yang macet), bukan persentase. Nilai 0 berarti normal.
+#
+# PERHATIAN: sama seperti ambang CPU, angka di bawah ini WAJIB
+# disesuaikan dengan standar yang berlaku di OCC. Nilai 1 dipakai
+# sebagai default karena satu stuck thread pun secara umum sudah
+# menandakan adanya masalah, sehingga bersifat konservatif
+# (menangkap seluruh kejadian).
+
+AMBANG_STUCK_THREAD = 1
 
 
 # ============================================================
@@ -479,6 +491,11 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
                     "CPU_UTILIZATION"
                 )
 
+            elif "stuck thread" in metric_lower:
+                parsed_data["metric_code"] = (
+                    "STUCK_THREAD"
+                )
+
             else:
                 # Metric NGSSP yang belum memiliki aturan produksi
                 # tetap diberi kode agar terekam sebagai fakta.
@@ -832,6 +849,49 @@ def evaluate_ngssp(
 
             "aturan_aktif": [
                 "R-NGSSP-03"
+            ],
+        }
+
+    # --------------------------------------------------------
+    # R-NGSSP-04
+    # Stuck Thread + val >= AMBANG_STUCK_THREAD
+    # --------------------------------------------------------
+    #
+    # Nilai val pada metric ini merupakan JUMLAH thread yang
+    # macet, sehingga aturannya menguji pelampauan ambang batas
+    # cacah, bukan persentase seperti R-NGSSP-03.
+
+    if (
+        metric_code == "STUCK_THREAD"
+        and isinstance(value, (int, float))
+        and value >= AMBANG_STUCK_THREAD
+    ):
+
+        return {
+            "condition":
+                "NGSSP_STUCK_THREAD",
+
+            "hasil_pembacaan":
+                f"Terdapat {int(value)} stuck thread pada "
+                f"{component}, menandakan thread aplikasi "
+                f"tertahan dan tidak menyelesaikan proses.",
+
+            "alasan_pembacaan":
+                f"Alert Stuck Thread memiliki nilai val="
+                f"{int(value)}, telah mencapai atau melampaui "
+                f"ambang batas {AMBANG_STUCK_THREAD} thread.",
+
+            "rekomendasi":
+                f"Ambil thread dump pada {component}, "
+                f"identifikasi thread yang tertahan beserta "
+                f"proses atau koneksi backend yang menjadi "
+                f"penyebab, evaluasi kebutuhan restart managed "
+                f"server, kemudian informasikan kepada {team}.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-NGSSP-04"
             ],
         }
 
@@ -1235,6 +1295,7 @@ def get_all_conditions():
         "NGSSP_NODE_EXPORTER_UNAVAILABLE",
         "NGSSP_MANAGED_SERVER_UNAVAILABLE",
         "NGSSP_CPU_HIGH",
+        "NGSSP_STUCK_THREAD",
         "USSD_PROCESS_NOT_RUNNING",
         "USSD_ERROR_DETECTED",
         "CRM_SERVICE_UNAVAILABLE",

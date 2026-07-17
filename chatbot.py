@@ -93,6 +93,11 @@ RULE_KB = {
         "nilai val yang mencapai atau melampaui ambang batas."
     ),
 
+    "R-NGSSP-04": (
+        "Alert NGSSP memiliki metric Stuck Thread dengan jumlah "
+        "thread macet yang mencapai atau melampaui ambang batas."
+    ),
+
     "R-USSD-01": (
         "Detail alert USSD mengandung pola "
         "'Process is not running'."
