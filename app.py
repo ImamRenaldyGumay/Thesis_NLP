@@ -252,6 +252,14 @@ RULE_REFERENCE = {
             "R-USSD-02",
             "Detail contains 'Errors found'",
         ),
+        (
+            "R-USSD-03",
+            "Detail contains 'PROCS CRITICAL'",
+        ),
+        (
+            "R-USSD-04",
+            "Detail contains 'MEMORY CRITICAL'",
+        ),
     ],
 
     "CRM": [

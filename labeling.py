@@ -85,6 +85,8 @@ LABEL_RULE_OPTIONS = [
     "R-NGSSP-04",
     "R-USSD-01",
     "R-USSD-02",
+    "R-USSD-03",
+    "R-USSD-04",
     "R-CRM-01",
 ]
 
@@ -99,7 +101,13 @@ VALID_RULE_BY_STREAM = {
         "R-NGSSP-03",
         "R-NGSSP-04",
     ],
-    "USSD": ["NONE", "R-USSD-01", "R-USSD-02"],
+    "USSD": [
+        "NONE",
+        "R-USSD-01",
+        "R-USSD-02",
+        "R-USSD-03",
+        "R-USSD-04",
+    ],
     "CRM": ["NONE", "R-CRM-01"],
     "UNKNOWN": ["NONE"],
 }
@@ -136,6 +144,15 @@ LABEL_GUIDE = {
     ),
     "R-USSD-02": (
         "Alert USSD dengan detail 'Errors found'."
+    ),
+    "R-USSD-03": (
+        "Alert USSD dengan detail 'PROCS CRITICAL', yaitu jumlah "
+        "proses berstatus kritis menurut sistem pemantauan."
+    ),
+    "R-USSD-04": (
+        "Alert USSD dengan detail 'MEMORY CRITICAL', yaitu "
+        "penggunaan memori berstatus kritis menurut sistem "
+        "pemantauan."
     ),
     "R-CRM-01": (
         "Alert CRM/OMNI dengan status service DOWN."

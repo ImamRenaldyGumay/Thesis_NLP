@@ -23,6 +23,8 @@ Basis Aturan Produksi:
     R-NGSSP-04 : Stuck Thread dengan val >= ambang batas
     R-USSD-01  : Process is not running
     R-USSD-02  : Errors found
+    R-USSD-03  : PROCS CRITICAL (jumlah proses tidak wajar)
+    R-USSD-04  : MEMORY CRITICAL (penggunaan memori kritis)
     R-CRM-01   : Service DOWN
 
 Output utama:
@@ -548,6 +550,60 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
         ):
             parsed_data["detail_code"] = (
                 "ERRORS_FOUND"
+            )
+
+        elif re.search(
+            r"PROCS\s+CRITICAL",
+            detail,
+            re.IGNORECASE,
+        ):
+            parsed_data["detail_code"] = (
+                "PROCS_CRITICAL"
+            )
+
+        elif re.search(
+            r"MEMORY\s+CRITICAL",
+            detail,
+            re.IGNORECASE,
+        ):
+            parsed_data["detail_code"] = (
+                "MEMORY_CRITICAL"
+            )
+
+        # Jumlah proses pada detail "PROCS CRITICAL : count N".
+        proc_count_match = re.search(
+            r"count\s+([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)",
+            detail,
+            re.IGNORECASE,
+        )
+
+        if proc_count_match:
+            parsed_data["proc_count"] = _to_number(
+                proc_count_match.group(1)
+            )
+
+        # Persentase pada detail
+        # "MEMORY CRITICAL : Mem used: X%, Swap used: Y%".
+        mem_match = re.search(
+            r"Mem\s+used:\s*([0-9.]+)\s*%",
+            detail,
+            re.IGNORECASE,
+        )
+
+        if mem_match:
+            parsed_data["mem_used"] = _to_number(
+                mem_match.group(1)
+            )
+
+        swap_match = re.search(
+            r"Swap\s+used:\s*([0-9.]+)\s*%",
+            detail,
+            re.IGNORECASE,
+        )
+
+        if swap_match:
+            parsed_data["swap_used"] = _to_number(
+                swap_match.group(1)
             )
 
         error_count_match = re.search(
@@ -1121,6 +1177,121 @@ def evaluate_ussd(
             ],
         }
 
+    # --------------------------------------------------------
+    # R-USSD-03
+    #
+    # IF:
+    #     STREAM = USSD
+    #     AND DETAIL_CODE = PROCS_CRITICAL
+    #
+    # THEN:
+    #     hasil pembacaan + alasan + rekomendasi.
+    #
+    # Aturan ini TIDAK memakai ambang batas sendiri. Berbeda
+    # dengan metric NGSSP yang hanya menyajikan angka mentah,
+    # detail alert USSD sudah memuat status "CRITICAL" yang
+    # ditetapkan oleh sistem pemantauan. Menambahkan ambang
+    # batas sendiri berisiko bertentangan dengan keputusan
+    # sistem tersebut. Pendekatan ini konsisten dengan
+    # R-USSD-01 dan R-USSD-02 yang juga mencocokkan pola detail.
+
+    if detail_code == "PROCS_CRITICAL":
+
+        proc_count = get_fact(facts, "PROC_COUNT")
+
+        jumlah = (
+            f"sebanyak {int(proc_count)}"
+            if isinstance(proc_count, (int, float))
+            else "dalam jumlah yang tidak wajar"
+        )
+
+        return {
+            "condition":
+                "USSD_PROCS_CRITICAL",
+
+            "hasil_pembacaan":
+                f"Jumlah proses pada {host} tercatat "
+                f"{jumlah} dan berstatus CRITICAL menurut "
+                f"pemeriksaan {check}.",
+
+            "alasan_pembacaan":
+                f"Detail alert memuat status PROCS CRITICAL "
+                f"pada pemeriksaan {check}.",
+
+            "rekomendasi":
+                f"Periksa daftar proses yang berjalan pada "
+                f"{host}, identifikasi proses yang menumpuk "
+                f"atau tidak berhenti sebagaimana mestinya "
+                f"(process leak), evaluasi kebutuhan restart "
+                f"layanan terkait, kemudian informasikan "
+                f"kepada tim terkait.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-USSD-03"
+            ],
+        }
+
+    # --------------------------------------------------------
+    # R-USSD-04
+    #
+    # IF:
+    #     STREAM = USSD
+    #     AND DETAIL_CODE = MEMORY_CRITICAL
+    #
+    # THEN:
+    #     hasil pembacaan + alasan + rekomendasi.
+    #
+    # Alasan tidak memakai ambang batas sendiri sama dengan
+    # R-USSD-03.
+
+    if detail_code == "MEMORY_CRITICAL":
+
+        mem_used = get_fact(facts, "MEM_USED")
+        swap_used = get_fact(facts, "SWAP_USED")
+
+        rincian = []
+
+        if isinstance(mem_used, (int, float)):
+            rincian.append(f"penggunaan memori {mem_used}%")
+
+        if isinstance(swap_used, (int, float)):
+            rincian.append(f"penggunaan swap {swap_used}%")
+
+        keterangan = (
+            " dengan " + " dan ".join(rincian)
+            if rincian
+            else ""
+        )
+
+        return {
+            "condition":
+                "USSD_MEMORY_CRITICAL",
+
+            "hasil_pembacaan":
+                f"Penggunaan memori pada {host} berstatus "
+                f"CRITICAL{keterangan}.",
+
+            "alasan_pembacaan":
+                f"Detail alert memuat status MEMORY CRITICAL "
+                f"pada pemeriksaan {check}.",
+
+            "rekomendasi":
+                f"Identifikasi proses dengan konsumsi memori "
+                f"tertinggi pada {host}, periksa kemungkinan "
+                f"memory leak, tinjau penggunaan swap sebagai "
+                f"indikasi tekanan memori, evaluasi kapasitas "
+                f"serta kebutuhan restart layanan, kemudian "
+                f"informasikan kepada tim terkait.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-USSD-04"
+            ],
+        }
+
     return unknown_output(
         reason=(
             "Detail alert USSD tidak memenuhi pola "
@@ -1406,6 +1577,8 @@ def get_all_conditions():
         "NGSSP_CPU_HIGH",
         "NGSSP_STUCK_THREAD",
         "USSD_PROCESS_NOT_RUNNING",
+        "USSD_PROCS_CRITICAL",
+        "USSD_MEMORY_CRITICAL",
         "USSD_ERROR_DETECTED",
         "CRM_SERVICE_UNAVAILABLE",
         "UNKNOWN",

@@ -253,6 +253,53 @@ RULE_FEATURE_WEIGHTS = {
     ],
 
     # --------------------------------------------------------
+    # R-USSD-03 : PROCS CRITICAL
+    # --------------------------------------------------------
+    "R-USSD-03": [
+        (
+            "Pola 'PROCS CRITICAL'",
+            lambda f: _f(f, "DETAIL_CODE") == "PROCS_CRITICAL",
+            0.70,
+        ),
+        (
+            "Jumlah proses (count) terekstraksi",
+            lambda f: _f(f, "PROC_COUNT") is not None,
+            0.20,
+        ),
+        (
+            "Host terekstraksi",
+            lambda f: bool(_f(f, "HOST")),
+            0.10,
+        ),
+    ],
+
+    # --------------------------------------------------------
+    # R-USSD-04 : MEMORY CRITICAL
+    # --------------------------------------------------------
+    "R-USSD-04": [
+        (
+            "Pola 'MEMORY CRITICAL'",
+            lambda f: _f(f, "DETAIL_CODE") == "MEMORY_CRITICAL",
+            0.65,
+        ),
+        (
+            "Persentase memori terekstraksi",
+            lambda f: _f(f, "MEM_USED") is not None,
+            0.20,
+        ),
+        (
+            "Persentase swap terekstraksi",
+            lambda f: _f(f, "SWAP_USED") is not None,
+            0.10,
+        ),
+        (
+            "Host terekstraksi",
+            lambda f: bool(_f(f, "HOST")),
+            0.05,
+        ),
+    ],
+
+    # --------------------------------------------------------
     # R-CRM-01 : Service DOWN
     # --------------------------------------------------------
     "R-CRM-01": [
@@ -284,7 +331,12 @@ STREAM_RULES = {
         "R-NGSSP-03",
         "R-NGSSP-04",
     ],
-    "USSD": ["R-USSD-01", "R-USSD-02"],
+    "USSD": [
+        "R-USSD-01",
+        "R-USSD-02",
+        "R-USSD-03",
+        "R-USSD-04",
+    ],
     "CRM": ["R-CRM-01"],
 }
 

@@ -114,6 +114,18 @@ RULE_KB = {
         "'Errors found'."
     ),
 
+    "R-USSD-03": (
+        "Detail alert USSD mengandung pola 'PROCS CRITICAL', "
+        "yaitu jumlah proses yang dinyatakan kritis oleh sistem "
+        "pemantauan."
+    ),
+
+    "R-USSD-04": (
+        "Detail alert USSD mengandung pola 'MEMORY CRITICAL', "
+        "yaitu penggunaan memori yang dinyatakan kritis oleh "
+        "sistem pemantauan."
+    ),
+
     "R-CRM-01": (
         "Alert CRM/OMNI memiliki status service DOWN."
     ),
