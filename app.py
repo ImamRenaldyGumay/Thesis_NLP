@@ -217,6 +217,11 @@ RULE_REFERENCE = {
             "SR Degraded AND TE > 0 AND BE = 0 "
             "AND Undefined = 0",
         ),
+        (
+            "R-BWCE-02",
+            "SR Degraded AND TE > 0 "
+            "AND (BE > 0 OR Undefined > 0)",
+        ),
     ],
 
     "NGSSP": [

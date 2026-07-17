@@ -78,6 +78,7 @@ LABEL_STREAM_OPTIONS = [
 LABEL_RULE_OPTIONS = [
     "NONE",
     "R-BWCE-01",
+    "R-BWCE-02",
     "R-NGSSP-01",
     "R-NGSSP-02",
     "R-NGSSP-03",
@@ -90,7 +91,7 @@ LABEL_RULE_OPTIONS = [
 # Aturan yang valid untuk tiap stream.
 # Dipakai untuk validasi konsistensi label.
 VALID_RULE_BY_STREAM = {
-    "BWCE": ["NONE", "R-BWCE-01"],
+    "BWCE": ["NONE", "R-BWCE-01", "R-BWCE-02"],
     "NGSSP": [
         "NONE",
         "R-NGSSP-01",
@@ -110,6 +111,11 @@ LABEL_GUIDE = {
     "R-BWCE-01": (
         "Alert BWCE dengan flag SR Degraded, Technical Error > 0, "
         "Business Error = 0, dan Undefined Error = 0."
+    ),
+    "R-BWCE-02": (
+        "Alert BWCE dengan SR Degraded disertai Technical Error, "
+        "dan terdapat pula Business Error dan/atau Undefined "
+        "Error (error campuran)."
     ),
     "R-NGSSP-01": (
         "Alert NGSSP metric Node Exporter Status dengan val = 0."
@@ -592,9 +598,9 @@ def _template_rows() -> List[Dict[str, str]]:
                 "TE Info: mixed error |"
             ),
             "label_stream": "BWCE",
-            "label_rule": "NONE",
+            "label_rule": "R-BWCE-02",
             "pelabel": "",
-            "catatan": "Contoh negatif: BE > 0 sehingga R-BWCE-01 tidak aktif.",
+            "catatan": "Contoh: error campuran (BE > 0) -> R-BWCE-02.",
         },
         {
             "text": (

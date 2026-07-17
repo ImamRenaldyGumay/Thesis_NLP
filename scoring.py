@@ -114,6 +114,37 @@ RULE_FEATURE_WEIGHTS = {
     ],
 
     # --------------------------------------------------------
+    # R-BWCE-02 : SR Degraded dengan error campuran
+    # --------------------------------------------------------
+    "R-BWCE-02": [
+        (
+            "Flag SR Degraded terdeteksi",
+            lambda f: _f(f, "SR_DEGRADED") is True,
+            0.35,
+        ),
+        (
+            "Technical Error > 0 (penyebab turunnya SR)",
+            lambda f: isinstance(_f(f, "TE"), (int, float))
+            and _f(f, "TE") > 0,
+            0.35,
+        ),
+        (
+            "Terdapat Business Error atau Undefined Error",
+            lambda f: (
+                (
+                    isinstance(_f(f, "BE"), (int, float))
+                    and _f(f, "BE") > 0
+                )
+                or (
+                    isinstance(_f(f, "UNDEFINED"), (int, float))
+                    and _f(f, "UNDEFINED") > 0
+                )
+            ),
+            0.30,
+        ),
+    ],
+
+    # --------------------------------------------------------
     # R-NGSSP-01 : Node Exporter Status val=0
     # --------------------------------------------------------
     "R-NGSSP-01": [
@@ -246,7 +277,7 @@ RULE_FEATURE_WEIGHTS = {
 
 # Aturan yang menjadi kandidat untuk tiap stream.
 STREAM_RULES = {
-    "BWCE": ["R-BWCE-01"],
+    "BWCE": ["R-BWCE-01", "R-BWCE-02"],
     "NGSSP": [
         "R-NGSSP-01",
         "R-NGSSP-02",

@@ -78,6 +78,12 @@ RULE_KB = {
         "dan Undefined Error sama dengan 0."
     ),
 
+    "R-BWCE-02": (
+        "Alert BWCE memiliki flag SR Degraded dengan Technical "
+        "Error lebih dari 0, disertai Business Error dan/atau "
+        "Undefined Error yang perlu ditinjau terpisah."
+    ),
+
     "R-NGSSP-01": (
         "Alert NGSSP memiliki metric Node Exporter Status "
         "dengan nilai val=0."

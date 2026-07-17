@@ -15,6 +15,8 @@ Pipeline:
 
 Basis Aturan Produksi:
     R-BWCE-01  : SR Degraded + Technical Error
+    R-BWCE-02  : SR Degraded dengan TE > 0 disertai BE > 0
+                 dan/atau Undefined > 0 (error campuran)
     R-NGSSP-01 : Node Exporter Status dengan val = 0
     R-NGSSP-02 : JVM Managed Server Status dengan val = 0
     R-NGSSP-03 : CPU Utilization dengan val >= ambang batas
@@ -715,10 +717,100 @@ def evaluate_bwce(
             ],
         }
 
+    # --------------------------------------------------------
+    # R-BWCE-02
+    #
+    # IF:
+    #     STREAM = BWCE
+    #     AND SR_DEGRADED = TRUE
+    #     AND TE > 0
+    #     AND (BE > 0 OR UNDEFINED > 0)
+    #
+    # THEN:
+    #     hasil pembacaan + alasan + rekomendasi.
+    #
+    # Dasar pemisahan dari R-BWCE-01
+    # ------------------------------
+    # Success Rate pada alert BWCE dihitung sebagai
+    # (Total - TE) / Total, yaitu hanya Technical Error yang
+    # diperhitungkan sebagai kegagalan. Akibatnya SR Degraded
+    # selalu disertai TE > 0, sedangkan Business Error dan
+    # Undefined Error tidak menurunkan SR.
+    #
+    # Karena itu keberadaan BE atau Undefined pada alert yang
+    # SR-nya degraded menandakan adanya persoalan TAMBAHAN di
+    # luar penyebab turunnya SR, sehingga perlu ditinjau
+    # terpisah. Inilah yang membedakannya dari R-BWCE-01 yang
+    # menangani kasus bersih (BE = 0 dan Undefined = 0).
+    #
+    # CATATAN: rumus SR di atas disimpulkan dari alert nyata dan
+    # MASIH PERLU DIKONFIRMASI ke OCC.
+
+    if (
+        sr_degraded is True
+        and te is not None
+        and te > 0
+        and (
+            (be is not None and be > 0)
+            or (undefined is not None and undefined > 0)
+        )
+    ):
+
+        error_info = (
+            f" Informasi Technical Error: {te_info}."
+            if te_info
+            else ""
+        )
+
+        # Rincian jenis error tambahan yang tercatat.
+        tambahan = []
+
+        if be is not None and be > 0:
+            tambahan.append(f"Business Error sebanyak {be}")
+
+        if undefined is not None and undefined > 0:
+            tambahan.append(f"Undefined Error sebanyak {undefined}")
+
+        rincian_tambahan = " dan ".join(tambahan)
+
+        return {
+            "condition":
+                "BWCE_SR_DEGRADED_MIXED",
+
+            "hasil_pembacaan":
+                f"Success Rate transaksi pada {app} "
+                f"mengalami degradasi disertai Technical "
+                f"Error, dan pada periode yang sama juga "
+                f"tercatat {rincian_tambahan} yang perlu "
+                f"ditinjau terpisah.",
+
+            "alasan_pembacaan":
+                f"Alert memiliki flag SR Degraded, "
+                f"SR={sr}%, TE={te}, BE={be}, "
+                f"dan Undefined={undefined}. Terdapat "
+                f"lebih dari satu jenis error."
+                f"{error_info}",
+
+            "rekomendasi":
+                f"Tangani Technical Error pada transaksi "
+                f"{app} terlebih dahulu karena menjadi "
+                f"penyebab turunnya SR; periksa informasi "
+                f"error dan log terkait. Selanjutnya tinjau "
+                f"{rincian_tambahan} secara terpisah bersama "
+                f"pemilik aplikasi. Informasikan kepada "
+                f"{team}.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-BWCE-02"
+            ],
+        }
+
     return unknown_output(
         reason=(
-            "Pola BWCE tidak memenuhi aturan "
-            "R-BWCE-01 yang tersedia."
+            "Pola BWCE tidak memenuhi aturan produksi "
+            "yang tersedia."
         ),
         stream="BWCE",
     )
@@ -1308,6 +1400,7 @@ def get_all_conditions():
 
     return sorted([
         "BWCE_SR_DEGRADED_TE",
+        "BWCE_SR_DEGRADED_MIXED",
         "NGSSP_NODE_EXPORTER_UNAVAILABLE",
         "NGSSP_MANAGED_SERVER_UNAVAILABLE",
         "NGSSP_CPU_HIGH",
