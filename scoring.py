@@ -300,6 +300,32 @@ RULE_FEATURE_WEIGHTS = {
     ],
 
     # --------------------------------------------------------
+    # R-USSD-05 : DISK CRITICAL
+    # --------------------------------------------------------
+    "R-USSD-05": [
+        (
+            "Pola 'DISK CRITICAL'",
+            lambda f: _f(f, "DETAIL_CODE") == "DISK_CRITICAL",
+            0.60,
+        ),
+        (
+            "Daftar partisi berhasil diuraikan",
+            lambda f: _f(f, "DISK_RINGKAS") is not None,
+            0.20,
+        ),
+        (
+            "Terdapat partisi yang melampaui ambang",
+            lambda f: bool(_f(f, "DISK_BERMASALAH")),
+            0.15,
+        ),
+        (
+            "Host terekstraksi",
+            lambda f: bool(_f(f, "HOST")),
+            0.05,
+        ),
+    ],
+
+    # --------------------------------------------------------
     # R-CRM-01 : Service DOWN
     # --------------------------------------------------------
     "R-CRM-01": [
@@ -336,6 +362,7 @@ STREAM_RULES = {
         "R-USSD-02",
         "R-USSD-03",
         "R-USSD-04",
+        "R-USSD-05",
     ],
     "CRM": ["R-CRM-01"],
 }

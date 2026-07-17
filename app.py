@@ -260,6 +260,10 @@ RULE_REFERENCE = {
             "R-USSD-04",
             "Detail contains 'MEMORY CRITICAL'",
         ),
+        (
+            "R-USSD-05",
+            "Detail contains 'DISK CRITICAL'",
+        ),
     ],
 
     "CRM": [

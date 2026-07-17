@@ -87,6 +87,7 @@ LABEL_RULE_OPTIONS = [
     "R-USSD-02",
     "R-USSD-03",
     "R-USSD-04",
+    "R-USSD-05",
     "R-CRM-01",
 ]
 
@@ -107,6 +108,7 @@ VALID_RULE_BY_STREAM = {
         "R-USSD-02",
         "R-USSD-03",
         "R-USSD-04",
+        "R-USSD-05",
     ],
     "CRM": ["NONE", "R-CRM-01"],
     "UNKNOWN": ["NONE"],
@@ -153,6 +155,11 @@ LABEL_GUIDE = {
         "Alert USSD dengan detail 'MEMORY CRITICAL', yaitu "
         "penggunaan memori berstatus kritis menurut sistem "
         "pemantauan."
+    ),
+    "R-USSD-05": (
+        "Alert USSD dengan detail 'DISK CRITICAL', yaitu "
+        "kapasitas salah satu partisi berstatus kritis menurut "
+        "sistem pemantauan."
     ),
     "R-CRM-01": (
         "Alert CRM/OMNI dengan status service DOWN."

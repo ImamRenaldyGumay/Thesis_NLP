@@ -126,6 +126,12 @@ RULE_KB = {
         "sistem pemantauan."
     ),
 
+    "R-USSD-05": (
+        "Detail alert USSD mengandung pola 'DISK CRITICAL', "
+        "yaitu kapasitas partisi yang dinyatakan kritis oleh "
+        "sistem pemantauan."
+    ),
+
     "R-CRM-01": (
         "Alert CRM/OMNI memiliki status service DOWN."
     ),

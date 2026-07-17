@@ -25,6 +25,7 @@ Basis Aturan Produksi:
     R-USSD-02  : Errors found
     R-USSD-03  : PROCS CRITICAL (jumlah proses tidak wajar)
     R-USSD-04  : MEMORY CRITICAL (penggunaan memori kritis)
+    R-USSD-05  : DISK CRITICAL (kapasitas partisi kritis)
     R-CRM-01   : Service DOWN
 
 Output utama:
@@ -88,6 +89,21 @@ AMBANG_CPU_TINGGI = 80.0
 # (menangkap seluruh kejadian).
 
 AMBANG_STUCK_THREAD = 1
+
+# Ambang persentase ruang TERPAKAI yang dianggap bermasalah pada
+# pemeriksaan disk USSD.
+#
+# Catatan penting: ambang ini TIDAK dipakai untuk memutuskan
+# apakah alert bersifat kritis - keputusan itu sudah diambil oleh
+# sistem pemantauan dan tertulis pada detail alert. Ambang ini
+# hanya dipakai untuk MENUNJUK partisi mana yang bermasalah,
+# karena satu alert disk memuat banyak partisi sekaligus.
+#
+# Karena perannya sekadar penunjuk, ketidaktepatan kecil pada
+# nilai ini tidak membuat pembacaan alert menjadi salah. Meski
+# begitu, nilainya tetap sebaiknya disesuaikan dengan standar OCC.
+
+AMBANG_DISK_TERPAKAI = 80.0
 
 
 # ============================================================
@@ -569,6 +585,91 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
             parsed_data["detail_code"] = (
                 "MEMORY_CRITICAL"
             )
+
+        elif re.search(
+            r"DISK\s+CRITICAL",
+            detail,
+            re.IGNORECASE,
+        ):
+            parsed_data["detail_code"] = (
+                "DISK_CRITICAL"
+            )
+
+        # ----------------------------------------------------
+        # Penguraian daftar partisi pada detail disk
+        # ----------------------------------------------------
+        #
+        # Contoh detail:
+        #   "DISK CRITICAL used : /boot 85.02% free
+        #    /home 70.51% free /tmp 99.58% free / 18.92% free"
+        #
+        # Perhatikan bahwa kata "used" muncul pada judul,
+        # sedangkan setiap angka diikuti kata "free". Keduanya
+        # bertentangan, dan artinya berkebalikan: 99.58% free
+        # berarti partisi nyaris KOSONG, sedangkan 99.58% used
+        # berarti nyaris PENUH.
+        #
+        # Agar tidak bergantung pada asumsi, kata kunci dibaca
+        # PER ANGKA langsung dari teks, bukan dari judul. Dengan
+        # demikian alert yang menuliskan "used" juga terbaca
+        # dengan benar tanpa perubahan kode.
+        #
+        # CATATAN: pertentangan judul vs nilai ini sebaiknya
+        # dikonfirmasi ke OCC. Bila ternyata judul yang benar dan
+        # kata "free" pada tiap nilai keliru, pembacaan akan
+        # terbalik.
+
+        pasangan = re.findall(
+            r"(/[^\s]*)\s+([0-9.]+)\s*%\s*(free|used)",
+            detail,
+            re.IGNORECASE,
+        )
+
+        if pasangan:
+
+            ringkas = []
+            bermasalah = []
+            maksimum = None
+
+            for mount, persen_teks, jenis in pasangan:
+
+                persen = _to_number(persen_teks)
+
+                if persen is None:
+                    continue
+
+                jenis = jenis.lower()
+
+                # Nilai dinormalisasi menjadi PERSEN TERPAKAI
+                # agar seluruh partisi dapat dibandingkan.
+                terpakai = (
+                    100 - persen
+                    if jenis == "free"
+                    else persen
+                )
+
+                terpakai = round(terpakai, 2)
+
+                ringkas.append(f"{mount} {terpakai}% terpakai")
+
+                if maksimum is None or terpakai > maksimum:
+                    maksimum = terpakai
+
+                if terpakai >= AMBANG_DISK_TERPAKAI:
+                    bermasalah.append(
+                        f"{mount} ({terpakai}% terpakai)"
+                    )
+
+            parsed_data["disk_ringkas"] = "; ".join(ringkas)
+            parsed_data["disk_jumlah_partisi"] = len(pasangan)
+
+            if maksimum is not None:
+                parsed_data["disk_maks_terpakai"] = maksimum
+
+            if bermasalah:
+                parsed_data["disk_bermasalah"] = ", ".join(
+                    bermasalah
+                )
 
         # Jumlah proses pada detail "PROCS CRITICAL : count N".
         proc_count_match = re.search(
@@ -1292,6 +1393,100 @@ def evaluate_ussd(
             ],
         }
 
+    # --------------------------------------------------------
+    # R-USSD-05
+    #
+    # IF:
+    #     STREAM = USSD
+    #     AND DETAIL_CODE = DISK_CRITICAL
+    #
+    # THEN:
+    #     hasil pembacaan + alasan + rekomendasi.
+    #
+    # Berbeda dengan aturan USSD lainnya, detail alert disk
+    # memuat BANYAK partisi sekaligus dengan jumlah yang
+    # berubah-ubah. Karena itu aturan ini menunjuk partisi mana
+    # yang benar-benar bermasalah; menyebut "disk kritis" tanpa
+    # menyebut partisinya tidak menolong engineer.
+    #
+    # Persentase tiap partisi telah dinormalisasi menjadi persen
+    # TERPAKAI oleh normalizer, dengan membaca kata kunci
+    # free/used langsung dari teks.
+
+    if detail_code == "DISK_CRITICAL":
+
+        bermasalah = get_fact(facts, "DISK_BERMASALAH")
+        ringkas = get_fact(facts, "DISK_RINGKAS", "")
+        jumlah = get_fact(facts, "DISK_JUMLAH_PARTISI")
+
+        if bermasalah:
+
+            pembacaan = (
+                f"Kapasitas disk pada {host} berstatus "
+                f"CRITICAL. Partisi yang hampir penuh: "
+                f"{bermasalah}."
+            )
+
+            rekomendasi = (
+                f"Periksa partisi {bermasalah} pada {host}, "
+                f"identifikasi berkas atau direktori dengan "
+                f"konsumsi ruang terbesar, lakukan pembersihan "
+                f"log atau berkas sementara yang sudah tidak "
+                f"diperlukan, evaluasi kebutuhan penambahan "
+                f"kapasitas, kemudian informasikan kepada tim "
+                f"terkait."
+            )
+
+        else:
+
+            # Status CRITICAL tetapi tidak ada partisi yang
+            # melewati ambang penunjuk. Kondisi ini tidak
+            # diklaim sebagai kesalahan sistem pemantauan,
+            # melainkan dilaporkan apa adanya agar dapat
+            # ditelusuri.
+            pembacaan = (
+                f"Kapasitas disk pada {host} berstatus "
+                f"CRITICAL, namun tidak terdapat partisi yang "
+                f"melampaui ambang penunjuk "
+                f"{AMBANG_DISK_TERPAKAI:.0f}% terpakai."
+            )
+
+            rekomendasi = (
+                f"Tinjau kondisi seluruh partisi pada {host} "
+                f"secara manual, dan periksa kembali kesesuaian "
+                f"ambang batas yang digunakan, kemudian "
+                f"informasikan kepada tim terkait."
+            )
+
+        keterangan_partisi = (
+            f" Kondisi seluruh partisi: {ringkas}."
+            if ringkas
+            else ""
+        )
+
+        return {
+            "condition":
+                "USSD_DISK_CRITICAL",
+
+            "hasil_pembacaan":
+                pembacaan,
+
+            "alasan_pembacaan":
+                f"Detail alert memuat status DISK CRITICAL "
+                f"pada pemeriksaan {check} dengan "
+                f"{jumlah} partisi terpantau."
+                f"{keterangan_partisi}",
+
+            "rekomendasi":
+                rekomendasi,
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-USSD-05"
+            ],
+        }
+
     return unknown_output(
         reason=(
             "Detail alert USSD tidak memenuhi pola "
@@ -1579,6 +1774,7 @@ def get_all_conditions():
         "USSD_PROCESS_NOT_RUNNING",
         "USSD_PROCS_CRITICAL",
         "USSD_MEMORY_CRITICAL",
+        "USSD_DISK_CRITICAL",
         "USSD_ERROR_DETECTED",
         "CRM_SERVICE_UNAVAILABLE",
         "UNKNOWN",
