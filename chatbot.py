@@ -132,6 +132,12 @@ RULE_KB = {
         "sistem pemantauan."
     ),
 
+    "R-USSD-06": (
+        "Alert USSD berstatus UNKNOWN dengan detail 'Plugin "
+        "execution error', yaitu plugin pemeriksa gagal "
+        "dijalankan sehingga status layanan tidak diketahui."
+    ),
+
     "R-CRM-01": (
         "Alert CRM/OMNI memiliki status service DOWN."
     ),

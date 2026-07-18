@@ -88,6 +88,7 @@ LABEL_RULE_OPTIONS = [
     "R-USSD-03",
     "R-USSD-04",
     "R-USSD-05",
+    "R-USSD-06",
     "R-CRM-01",
 ]
 
@@ -109,6 +110,7 @@ VALID_RULE_BY_STREAM = {
         "R-USSD-03",
         "R-USSD-04",
         "R-USSD-05",
+        "R-USSD-06",
     ],
     "CRM": ["NONE", "R-CRM-01"],
     "UNKNOWN": ["NONE"],
@@ -160,6 +162,12 @@ LABEL_GUIDE = {
         "Alert USSD dengan detail 'DISK CRITICAL', yaitu "
         "kapasitas salah satu partisi berstatus kritis menurut "
         "sistem pemantauan."
+    ),
+    "R-USSD-06": (
+        "Alert USSD berstatus UNKNOWN dengan detail 'Plugin "
+        "execution error'. Menandakan pemeriksaannya sendiri "
+        "yang gagal dijalankan, BUKAN layanan yang bermasalah, "
+        "sehingga status layanan tidak diketahui."
     ),
     "R-CRM-01": (
         "Alert CRM/OMNI dengan status service DOWN."

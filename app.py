@@ -264,6 +264,11 @@ RULE_REFERENCE = {
             "R-USSD-05",
             "Detail contains 'DISK CRITICAL'",
         ),
+        (
+            "R-USSD-06",
+            "Severity = UNKNOWN AND detail contains "
+            "'Plugin execution error'",
+        ),
     ],
 
     "CRM": [

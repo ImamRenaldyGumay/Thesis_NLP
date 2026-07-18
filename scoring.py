@@ -326,6 +326,28 @@ RULE_FEATURE_WEIGHTS = {
     ],
 
     # --------------------------------------------------------
+    # R-USSD-06 : Kegagalan pemantauan (plugin error)
+    # --------------------------------------------------------
+    "R-USSD-06": [
+        (
+            "Severity = UNKNOWN",
+            lambda f: str(_f(f, "SEVERITY", "")).upper()
+            == "UNKNOWN",
+            0.45,
+        ),
+        (
+            "Pola 'Plugin execution error'",
+            lambda f: _f(f, "DETAIL_CODE") == "PLUGIN_ERROR",
+            0.45,
+        ),
+        (
+            "Host terekstraksi",
+            lambda f: bool(_f(f, "HOST")),
+            0.10,
+        ),
+    ],
+
+    # --------------------------------------------------------
     # R-CRM-01 : Service DOWN
     # --------------------------------------------------------
     "R-CRM-01": [
@@ -363,6 +385,7 @@ STREAM_RULES = {
         "R-USSD-03",
         "R-USSD-04",
         "R-USSD-05",
+        "R-USSD-06",
     ],
     "CRM": ["R-CRM-01"],
 }

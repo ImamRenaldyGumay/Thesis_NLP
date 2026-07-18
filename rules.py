@@ -26,6 +26,8 @@ Basis Aturan Produksi:
     R-USSD-03  : PROCS CRITICAL (jumlah proses tidak wajar)
     R-USSD-04  : MEMORY CRITICAL (penggunaan memori kritis)
     R-USSD-05  : DISK CRITICAL (kapasitas partisi kritis)
+    R-USSD-06  : SEVERITY UNKNOWN + Plugin execution error
+                 (kegagalan pemantauan, bukan kegagalan layanan)
     R-CRM-01   : Service DOWN
 
 Output utama:
@@ -593,6 +595,15 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
         ):
             parsed_data["detail_code"] = (
                 "DISK_CRITICAL"
+            )
+
+        elif re.search(
+            r"Plugin\s+execution\s+error",
+            detail,
+            re.IGNORECASE,
+        ):
+            parsed_data["detail_code"] = (
+                "PLUGIN_ERROR"
             )
 
         # ----------------------------------------------------
@@ -1487,6 +1498,72 @@ def evaluate_ussd(
             ],
         }
 
+    # --------------------------------------------------------
+    # R-USSD-06
+    #
+    # IF:
+    #     STREAM = USSD
+    #     AND SEVERITY = UNKNOWN
+    #     AND DETAIL_CODE = PLUGIN_ERROR
+    #
+    # THEN:
+    #     hasil pembacaan + alasan + rekomendasi.
+    #
+    # Aturan ini berbeda jenis dari R-USSD-01 sampai R-USSD-05.
+    # Aturan-aturan tersebut melaporkan KONDISI SISTEM yang
+    # dipantau, sedangkan aturan ini melaporkan KEGAGALAN
+    # PEMANTAUANNYA SENDIRI.
+    #
+    # Status UNKNOWN pada sistem pemantauan berarti plugin
+    # pemeriksa gagal dijalankan, sehingga alert TIDAK menyatakan
+    # apa pun tentang kondisi layanan: layanan bisa saja sehat,
+    # bisa juga sedang bermasalah tanpa terdeteksi. Karena itu
+    # pembacaan aturan ini sengaja TIDAK menyimpulkan kondisi
+    # layanan, melainkan menyatakan bahwa kondisinya tidak
+    # diketahui.
+    #
+    # Syarat aturan memakai SEVERITY, bukan hanya pola detail,
+    # karena status UNKNOWN itulah inti kondisinya.
+
+    if (
+        str(severity).upper() == "UNKNOWN"
+        and detail_code == "PLUGIN_ERROR"
+    ):
+
+        return {
+            "condition":
+                "USSD_PLUGIN_ERROR",
+
+            "hasil_pembacaan":
+                f"Pemeriksaan {check} pada {host} gagal "
+                f"dijalankan, sehingga status layanan tidak "
+                f"dapat dipastikan. Alert ini menandakan "
+                f"gangguan pada pemantauannya, bukan pada "
+                f"layanan yang dipantau.",
+
+            "alasan_pembacaan":
+                f"Alert berstatus UNKNOWN dengan detail "
+                f"'Plugin execution error'. Status UNKNOWN "
+                f"menandakan plugin pemeriksa tidak berhasil "
+                f"dijalankan, sehingga tidak ada hasil "
+                f"pemeriksaan yang dapat disimpulkan.",
+
+            "rekomendasi":
+                f"Periksa plugin serta agen pemantauan untuk "
+                f"{check} pada {host}, pastikan skrip dan "
+                f"hak aksesnya berjalan normal. Selama "
+                f"pemantauan belum pulih, verifikasi status "
+                f"layanan secara manual karena host ini "
+                f"sedang tidak terpantau. Informasikan kepada "
+                f"tim yang mengelola pemantauan.",
+
+            "tim_terkait": team,
+
+            "aturan_aktif": [
+                "R-USSD-06"
+            ],
+        }
+
     return unknown_output(
         reason=(
             "Detail alert USSD tidak memenuhi pola "
@@ -1775,6 +1852,7 @@ def get_all_conditions():
         "USSD_PROCS_CRITICAL",
         "USSD_MEMORY_CRITICAL",
         "USSD_DISK_CRITICAL",
+        "USSD_PLUGIN_ERROR",
         "USSD_ERROR_DETECTED",
         "CRM_SERVICE_UNAVAILABLE",
         "UNKNOWN",
