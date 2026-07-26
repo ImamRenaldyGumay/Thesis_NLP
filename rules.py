@@ -158,6 +158,157 @@ def _to_number(value: Optional[str]):
         return None
 
 
+# ------------------------------------------------------------
+# PENYAJIAN TIMESTAMP
+# ------------------------------------------------------------
+#
+# Timestamp pada alert ditulis dalam format ISO 8601, mis.
+# "2024-11-08T01:00:00.000+07:00". Format tersebut tepat secara
+# mesin namun kurang mudah dibaca engineer. Fungsi di bawah
+# mengubahnya menjadi bentuk terbaca, mis.
+# "8 November 2024, 01:00:00 WIB".
+
+# Nama bulan Indonesia untuk penyajian timestamp.
+_BULAN_ID = [
+    "Januari", "Februari", "Maret", "April",
+    "Mei", "Juni", "Juli", "Agustus",
+    "September", "Oktober", "November", "Desember",
+]
+
+# Pemetaan offset UTC ke zona waktu Indonesia.
+_ZONA_ID = {
+    "+07:00": "WIB",
+    "+08:00": "WITA",
+    "+09:00": "WIT",
+}
+
+
+def _format_timestamp(value: Optional[str]) -> Optional[str]:
+    """
+    Mengubah timestamp ISO 8601 menjadi bentuk yang mudah
+    dibaca manusia.
+
+    Contoh:
+        "2024-11-08T01:00:00.000+07:00"
+        -> "8 November 2024, 01:00:00 WIB"
+
+    Bila format tidak dikenali, nilai asli dikembalikan
+    apa adanya agar informasi tidak hilang (best-effort).
+    """
+
+    if not value:
+        return value
+
+    match = re.match(
+        r"(\d{4})-(\d{2})-(\d{2})"      # tanggal
+        r"T(\d{2}):(\d{2}):(\d{2})"     # jam
+        r"(?:\.\d+)?"                   # milidetik (opsional)
+        r"([+\-]\d{2}:\d{2})?",         # offset zona (opsional)
+        str(value).strip(),
+    )
+
+    if not match:
+        return value
+
+    tahun, bulan, tanggal, jam, menit, detik, offset = (
+        match.groups()
+    )
+
+    nama_bulan = _BULAN_ID[int(bulan) - 1]
+
+    zona = _ZONA_ID.get(offset, offset or "")
+
+    hasil = (
+        f"{int(tanggal)} {nama_bulan} {tahun}, "
+        f"{jam}:{menit}:{detik}"
+    )
+
+    if zona:
+        hasil += f" {zona}"
+
+    return hasil
+
+
+# ------------------------------------------------------------
+# PENGURAIAN IDENTITAS KOMPONEN
+# ------------------------------------------------------------
+#
+# Field COMPONENT pada alert NGSSP memuat lebih dari satu
+# entitas yang digabung menjadi satu string. Dua pola yang
+# ditemukan pada data:
+#
+#   1. <managed_server>@<host_server>
+#      mis. WLS_SOA1@GEORED-NGSSP-SOAD2
+#
+#   2. <host_server>:<port>
+#      mis. xptrvssoa120:9092
+#
+# Menampilkan string gabungan apa adanya menyisakan pertanyaan
+# "bagian mana yang server, bagian mana yang host". Karena itu
+# identitas dipecah menjadi entitas terpisah agar pembacaan
+# alert menjadi bermakna.
+#
+# CATATAN PENTING
+# ---------------
+# Penguraian ini hanya menetapkan PERAN tiap segmen (managed
+# server, host, port) berdasarkan struktur penulisannya, dan
+# TIDAK menafsirkan arti singkatan di dalamnya. Kepanjangan
+# konvensi penamaan internal merupakan ranah dokumentasi
+# operasional OCC, bukan sesuatu yang dapat disimpulkan dari
+# teks alert.
+
+def _pecah_komponen(component: Optional[str]) -> Dict[str, str]:
+    """
+    Memecah identitas komponen menjadi entitas terpisah.
+
+    Contoh:
+        "WLS_SOA1@GEORED-NGSSP-SOAD2"
+        -> {"managed_server": "WLS_SOA1",
+            "host_server": "GEORED-NGSSP-SOAD2"}
+
+        "xptrvssoa120:9092"
+        -> {"host_server": "xptrvssoa120", "port": "9092"}
+    """
+
+    hasil: Dict[str, str] = {}
+
+    if not component:
+        return hasil
+
+    teks = str(component).strip()
+
+    if not teks:
+        return hasil
+
+    sisa = teks
+
+    # Segmen sebelum "@" merupakan nama managed server.
+    if "@" in teks:
+
+        server, _, sisa = teks.partition("@")
+
+        server = server.strip()
+
+        if server:
+            hasil["managed_server"] = server
+
+    sisa = sisa.strip()
+
+    # Sisa string dapat berupa "host:port" atau host saja.
+    cocok_port = re.match(r"^(.+?):([0-9]+)$", sisa)
+
+    if cocok_port:
+
+        hasil["host_server"] = cocok_port.group(1).strip()
+        hasil["port"] = cocok_port.group(2)
+
+    elif sisa:
+
+        hasil["host_server"] = sisa
+
+    return hasil
+
+
 def _extract_team(text: str) -> Optional[str]:
     """Mengekstrak nama tim dari teks alert."""
 
@@ -509,6 +660,19 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
             parsed_data.get("value")
         )
 
+        # Ubah timestamp mentah menjadi bentuk terbaca manusia.
+        if parsed_data.get("issue_start"):
+            parsed_data["issue_start"] = _format_timestamp(
+                parsed_data["issue_start"]
+            )
+
+        # Pecah identitas komponen menjadi entitas terpisah
+        # (managed server, host, port) agar pembacaan alert
+        # tidak sekadar menyalin string gabungan.
+        parsed_data.update(
+            _pecah_komponen(parsed_data.get("component"))
+        )
+
         metric = parsed_data.get("metric")
 
         if metric:
@@ -549,6 +713,12 @@ def parser(scanner_result: Dict[str, Any]) -> Dict[str, Any]:
     # Normalisasi USSD
 
     elif stream == "USSD":
+
+        # Ubah timestamp mentah menjadi bentuk terbaca manusia.
+        if parsed_data.get("timestamp"):
+            parsed_data["timestamp"] = _format_timestamp(
+                parsed_data["timestamp"]
+            )
 
         detail = parsed_data.get("detail", "")
 
@@ -1014,6 +1184,45 @@ def evaluate_ngssp(
         STREAM_INFO["NGSSP"]["tim_default"],
     )
 
+    # Entitas hasil penguraian identitas komponen.
+    managed_server = get_fact(facts, "MANAGED_SERVER")
+    host_server = get_fact(facts, "HOST_SERVER")
+    port = get_fact(facts, "PORT")
+
+    # Sebutan host yang dipakai dalam kalimat pembacaan. Bila
+    # penguraian gagal, identitas komponen utuh tetap dipakai
+    # agar informasi tidak hilang.
+    host_teks = host_server or component
+
+    # Rincian entitas untuk bagian "alasan pembacaan". Bagian
+    # ini menjelaskan PERAN tiap segmen identitas, bukan arti
+    # singkatannya.
+    rincian_entitas = []
+
+    if managed_server:
+        rincian_entitas.append(
+            f"Objek {managed_server} merupakan nama Managed "
+            f"Server yang dipantau."
+        )
+
+    if host_server:
+        rincian_entitas.append(
+            f"Objek {host_server} merupakan identitas "
+            f"host/server tempat komponen tersebut berjalan."
+        )
+
+    if port:
+        rincian_entitas.append(
+            f"Angka {port} merupakan port endpoint yang "
+            f"dipantau pada host tersebut."
+        )
+
+    keterangan_entitas = (
+        " " + " ".join(rincian_entitas)
+        if rincian_entitas
+        else ""
+    )
+
     # --------------------------------------------------------
     # R-NGSSP-01
     # Node Exporter Status + val = 0
@@ -1029,18 +1238,31 @@ def evaluate_ngssp(
                 "NGSSP_NODE_EXPORTER_UNAVAILABLE",
 
             "hasil_pembacaan":
-                f"Node Exporter pada {component} "
-                f"teridentifikasi tidak tersedia.",
+                f"Layanan Node Exporter yang berjalan pada "
+                f"host {host_teks} tidak memberikan respons "
+                f"melalui endpoint pemantauan"
+                + (f" pada port {port}" if port else "")
+                + f". Akibatnya, sistem pemantauan tidak dapat "
+                f"memperoleh metrik terbaru dari host tersebut, "
+                f"sehingga kondisi aktual host tidak dapat "
+                f"dipantau secara otomatis hingga layanan "
+                f"kembali normal.",
 
             "alasan_pembacaan":
-                "Alert Node Exporter Status memiliki "
-                "nilai val=0.",
+                f"Alert bertipe Node Exporter Status dengan "
+                f"nilai val=0, yang menandakan Node Exporter "
+                f"tidak aktif."
+                f"{keterangan_entitas}",
 
             "rekomendasi":
-                f"Verifikasi status host dan Node Exporter "
-                f"pada {component}, periksa konektivitas "
-                f"serta proses monitoring, kemudian "
-                f"informasikan kepada {team}.",
+                f"Verifikasi status host {host_teks} beserta "
+                f"proses Node Exporter"
+                + (f" pada port {port}" if port else "")
+                + f", periksa konektivitas ke sistem "
+                f"pemantauan. Selama exporter belum pulih, "
+                f"kondisi host perlu diverifikasi manual "
+                f"karena tidak terpantau. Informasikan "
+                f"kepada {team}.",
 
             "tim_terkait": team,
 
@@ -1064,19 +1286,28 @@ def evaluate_ngssp(
                 "NGSSP_MANAGED_SERVER_UNAVAILABLE",
 
             "hasil_pembacaan":
-                f"Managed Server {component} "
-                f"teridentifikasi tidak berjalan "
-                f"atau tidak tersedia.",
+                f"Managed Server {managed_server or component} "
+                + (f"pada host {host_server} " if host_server else "")
+                + f"teridentifikasi tidak berjalan (down) atau "
+                f"tidak tersedia, sehingga layanan aplikasi "
+                f"yang ditangani instance tersebut berpotensi "
+                f"tidak dapat melayani permintaan.",
 
             "alasan_pembacaan":
-                "Alert JVM Managed Server Status memiliki "
-                "nilai val=0.",
+                f"Alert bertipe JVM Managed Server Status "
+                f"dengan nilai val=0, yang menandakan Managed "
+                f"Server tidak aktif."
+                f"{keterangan_entitas}",
 
             "rekomendasi":
-                f"Verifikasi status Managed Server "
-                f"{component}, periksa log dan status "
-                f"layanan terkait, kemudian informasikan "
-                f"kepada {team}.",
+                f"Verifikasi apakah Managed Server "
+                f"{managed_server or component} "
+                + (f"pada host {host_server} " if host_server else "")
+                + f"masih aktif. Periksa log WebLogic, status "
+                f"service, serta penggunaan resource pada host "
+                f"tersebut, kemudian lakukan restart sesuai "
+                f"prosedur operasional atau eskalasikan kepada "
+                f"{team} apabila diperlukan.",
 
             "tim_terkait": team,
 
@@ -1105,17 +1336,19 @@ def evaluate_ngssp(
                 "NGSSP_CPU_HIGH",
 
             "hasil_pembacaan":
-                f"Penggunaan CPU pada {component} "
+                f"Penggunaan CPU pada {host_teks} "
                 f"teridentifikasi tinggi, yaitu "
                 f"{value:.2f}%.",
 
             "alasan_pembacaan":
-                f"Alert CPU Utilization memiliki nilai val="
-                f"{value:.2f}, telah mencapai atau melampaui "
-                f"ambang batas {AMBANG_CPU_TINGGI:.0f}%.",
+                f"Alert bertipe CPU Utilization dengan nilai "
+                f"val={value:.2f}, telah mencapai atau "
+                f"melampaui ambang batas "
+                f"{AMBANG_CPU_TINGGI:.0f}%."
+                f"{keterangan_entitas}",
 
             "rekomendasi":
-                f"Periksa beban proses pada {component}, "
+                f"Periksa beban proses pada {host_teks}, "
                 f"identifikasi proses dengan konsumsi CPU "
                 f"tertinggi, evaluasi kapasitas serta tren "
                 f"penggunaan, kemudian informasikan kepada "
@@ -1149,16 +1382,24 @@ def evaluate_ngssp(
 
             "hasil_pembacaan":
                 f"Terdapat {int(value)} stuck thread pada "
-                f"{component}, menandakan thread aplikasi "
-                f"tertahan dan tidak menyelesaikan proses.",
+                f"{managed_server or host_teks}"
+                + (
+                    f" di host {host_server}"
+                    if managed_server and host_server
+                    else ""
+                )
+                + f", menandakan thread aplikasi tertahan dan "
+                f"tidak menyelesaikan proses.",
 
             "alasan_pembacaan":
-                f"Alert Stuck Thread memiliki nilai val="
+                f"Alert bertipe Stuck Thread dengan nilai val="
                 f"{int(value)}, telah mencapai atau melampaui "
-                f"ambang batas {AMBANG_STUCK_THREAD} thread.",
+                f"ambang batas {AMBANG_STUCK_THREAD} thread."
+                f"{keterangan_entitas}",
 
             "rekomendasi":
-                f"Ambil thread dump pada {component}, "
+                f"Ambil thread dump pada "
+                f"{managed_server or host_teks}, "
                 f"identifikasi thread yang tertahan beserta "
                 f"proses atau koneksi backend yang menjadi "
                 f"penyebab, evaluasi kebutuhan restart managed "
@@ -1566,8 +1807,8 @@ def evaluate_ussd(
 
     return unknown_output(
         reason=(
-            "Detail alert USSD tidak memenuhi pola "
-            "'Process is not running' atau 'Errors found'."
+            "Detail alert USSD tidak memenuhi aturan produksi "
+            "USSD yang tersedia."
         ),
         stream="USSD",
     )

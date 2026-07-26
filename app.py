@@ -11,6 +11,8 @@ Menu:
     3. Database
     4. Dashboard
     5. Chatbot
+    6. Pengujian
+    7. Pelabelan
 
 Pipeline:
     Input Alert
@@ -91,6 +93,89 @@ init_extraction_db()
 
 
 # ============================================================
+# KETERANGAN FIELD ALERT
+# ============================================================
+#
+# Nama field pada alert ditulis dalam istilah teknis yang tidak
+# selalu dipahami pembaca awam. Kamus di bawah menyediakan
+# keterangan singkat untuk tiap field, yang ditampilkan di dalam
+# tanda kurung pada tabel hasil Scanner, Parser, dan Translator.
+#
+# Keterangan sengaja dibuat pendek (satu frasa) agar tabel tetap
+# ringkas dan mudah dibaca.
+
+KETERANGAN_FIELD = {
+    # ---------- Umum ----------
+    "STREAM": "jenis sumber alert",
+    "TEAM": "tim yang perlu diberi tahu",
+
+    # ---------- NGSSP ----------
+    "METRIC": "jenis pemeriksaan",
+    "METRIC_CODE": "kode jenis pemeriksaan",
+    "COMPONENT": "komponen yang dipantau",
+    "MANAGED_SERVER": "nama managed server",
+    "HOST_SERVER": "host tempat komponen berjalan",
+    "PORT": "port endpoint yang dipantau",
+    "VALUE": "nilai yang dilaporkan",
+    "ISSUE_START": "waktu mulai masalah",
+
+    # ---------- BWCE ----------
+    "APP": "aplikasi/modul terkait",
+    "TOTAL": "jumlah seluruh transaksi",
+    "SUCCESS": "jumlah transaksi berhasil",
+    "TE": "jumlah error teknis",
+    "BE": "jumlah error bisnis",
+    "UNDEFINED": "jumlah error tak terklasifikasi",
+    "SR": "persentase keberhasilan",
+    "SR_DEGRADED": "penanda penurunan keberhasilan",
+    "TE_INFO": "keterangan error teknis",
+
+    # ---------- USSD ----------
+    "CHECK": "jenis pemeriksaan",
+    "HOST": "server yang diperiksa",
+    "IP": "alamat IP server",
+    "SEVERITY": "tingkat keparahan",
+    "TIMESTAMP": "waktu pemeriksaan",
+    "DETAIL": "rincian hasil pemeriksaan",
+    "DETAIL_CODE": "kode rincian hasil",
+    "ERROR_COUNT": "jumlah error ditemukan",
+    "PROC_COUNT": "jumlah proses berjalan",
+    "MEM_USED": "pemakaian memori",
+    "SWAP_USED": "pemakaian swap",
+    "DISK_RINGKAS": "ringkasan seluruh partisi",
+    "DISK_BERMASALAH": "partisi yang hampir penuh",
+    "DISK_JUMLAH_PARTISI": "jumlah partisi terpantau",
+    "DISK_MAKS_TERPAKAI": "partisi paling penuh",
+
+    # ---------- CRM / OMNI ----------
+    "SERVICE": "nama layanan",
+    "HOSTNAME": "server tempat layanan berjalan",
+    "STATUS": "kondisi layanan",
+}
+
+
+def beri_keterangan(nama_field):
+    """
+    Menambahkan keterangan singkat di dalam tanda kurung.
+
+    Contoh:
+        "METRIC" -> "METRIC (jenis pemeriksaan)"
+
+    Field yang belum memiliki keterangan ditampilkan apa adanya,
+    sehingga penambahan field baru tidak menyebabkan error.
+    """
+
+    nama_field = str(nama_field)
+
+    keterangan = KETERANGAN_FIELD.get(nama_field.upper())
+
+    if keterangan:
+        return f"{nama_field} ({keterangan})"
+
+    return nama_field
+
+
+# ============================================================
 # HELPER
 # ============================================================
 
@@ -153,8 +238,10 @@ def facts_to_dataframe(facts):
         rows.append(
             {
                 "No": number,
-                "Predicate": fact.get("predicate", ""),
-                "Value": str(fact.get("value", "")),
+                "Jenis Informasi": beri_keterangan(
+                    fact.get("predicate", "")
+                ),
+                "Isi": str(fact.get("value", "")),
             }
         )
 
@@ -175,8 +262,12 @@ def lexemes_to_dataframe(tokens):
         rows.append(
             {
                 "No": number,
-                "Token": lexeme.get("type", ""),
-                "Lexeme": str(lexeme.get("value", "")),
+                "Jenis Informasi": beri_keterangan(
+                    lexeme.get("type", "")
+                ),
+                "Isi yang Ditemukan": str(
+                    lexeme.get("value", "")
+                ),
             }
         )
 
@@ -280,6 +371,13 @@ RULE_REFERENCE = {
 }
 
 
+# Jumlah aturan dihitung otomatis agar keterangan pada sidebar
+# tidak pernah bertentangan dengan isi basis aturan.
+JUMLAH_ATURAN = sum(
+    len(daftar) for daftar in RULE_REFERENCE.values()
+)
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -289,7 +387,7 @@ with st.sidebar:
     st.header("📋 Basis Aturan Produksi")
 
     st.caption(
-        "Enam aturan produksi yang digunakan "
+        f"{JUMLAH_ATURAN} aturan produksi yang digunakan "
         "oleh Evaluator."
     )
 
@@ -749,7 +847,12 @@ with tab_single:
 
             st.info(stream)
 
-            st.write("**Token/Lexeme yang Dikenali:**")
+            st.write("**Informasi yang Berhasil Dikenali:**")
+
+            st.caption(
+                "Keterangan di dalam tanda kurung menjelaskan "
+                "arti tiap jenis informasi."
+            )
 
             lexeme_df = lexemes_to_dataframe(tokens)
 
@@ -799,7 +902,7 @@ with tab_single:
 
                     parser_rows.append(
                         {
-                            "Informasi": key,
+                            "Informasi": beri_keterangan(key),
                             "Nilai": str(value),
                         }
                     )
@@ -1678,8 +1781,9 @@ with tab_chatbot:
                     f"pertanyaan: {error}"
                 )
 
+
 # ============================================================
-# 5. PENGUJIAN (AKURASI + PEMBOBOTAN NLP)
+# 6. PENGUJIAN (AKURASI + PEMBOBOTAN NLP)
 # ============================================================
 
 with tab_evaluasi:
@@ -2135,10 +2239,6 @@ with tab_pelabelan:
     )
 
     # ========================================================
-    # MODE 1-1
-    # ========================================================
-
-    # ========================================================
     # MODE VERIFIKASI EKSTRAKSI
     # ========================================================
     #
@@ -2405,6 +2505,10 @@ with tab_pelabelan:
                     hapus_semua_verifikasi()
                     st.success("Seluruh verifikasi dihapus.")
                     st.rerun()
+
+    # ========================================================
+    # MODE SATU PER SATU
+    # ========================================================
 
     elif mode == "Satu per satu (1-1)":
 
