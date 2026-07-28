@@ -309,6 +309,31 @@ def _pecah_komponen(component: Optional[str]) -> Dict[str, str]:
     return hasil
 
 
+def _waktu_narasi(nilai: Optional[str]) -> Optional[str]:
+    """
+    Mengubah waktu terformat menjadi bentuk naratif.
+
+    Contoh:
+        "30 April 2026, 06:11:00 WIB"
+        -> "30 April 2026 pukul 06:11 WIB"
+
+    Detik dihilangkan karena pada penulisan naratif tingkat
+    ketelitian sampai detik tidak menambah makna. Bila pola
+    tidak dikenali, nilai dikembalikan apa adanya.
+    """
+
+    if not nilai:
+        return nilai
+
+    hasil = re.sub(
+        r",\s*(\d{2}):(\d{2}):\d{2}\s*",
+        r" pukul \1:\2 ",
+        str(nilai),
+    )
+
+    return hasil.strip()
+
+
 def _extract_team(text: str) -> Optional[str]:
     """Mengekstrak nama tim dari teks alert."""
 
@@ -534,6 +559,69 @@ def scanner(text: str, stream: str) -> Dict[str, Any]:
                 _lexeme(
                     "ISSUE_START",
                     issue_match.group(1).strip(),
+                )
+            )
+
+        # ----------------------------------------------------
+        # IDENTITAS ALERT
+        # ----------------------------------------------------
+        #
+        # Sebagian alert NGSSP diawali kode identitas yang
+        # dipisahkan tanda "|", mis. "a3ImyYSMk | NGSSP OSBD4 - ...".
+        # Kode ini tidak menyatakan kondisi sistem, namun berguna
+        # sebagai rujukan saat pencatatan tiket dan eskalasi.
+
+        id_match = re.match(
+            r"\s*([A-Za-z0-9_\-]{5,})\s*\|",
+            text,
+        )
+
+        if id_match:
+            tokens["lexemes"].append(
+                _lexeme("ALERT_ID", id_match.group(1))
+            )
+
+        # ----------------------------------------------------
+        # SUMBER ALERT
+        # ----------------------------------------------------
+        #
+        # Segmen sebelum tanda hubung pertama memuat label sumber
+        # alert, mis. "NGSSP OSBD4", "ESB API Domain", atau
+        # "GEORED NGSSP OSBD3". Label ini diambil APA ADANYA dan
+        # TIDAK dipecah menjadi nama aplikasi dan nama server,
+        # karena jumlah segmennya tidak konsisten antar-alert
+        # sehingga pemecahan otomatis berisiko keliru.
+
+        sumber_match = re.search(
+            r"^(?:[^|]*\|)?\s*(.+?)\s+-\s+",
+            text,
+        )
+
+        if sumber_match:
+            tokens["lexemes"].append(
+                _lexeme(
+                    "SUMBER",
+                    sumber_match.group(1).strip(),
+                )
+            )
+
+        # ----------------------------------------------------
+        # URL DASHBOARD
+        # ----------------------------------------------------
+        #
+        # Tautan dashboard pemantauan bukan bagian dari kondisi
+        # gangguan, melainkan sarana verifikasi lanjutan.
+
+        url_match = re.search(
+            r"(https?://\S+)",
+            text,
+        )
+
+        if url_match:
+            tokens["lexemes"].append(
+                _lexeme(
+                    "URL",
+                    url_match.group(1).rstrip(".,;"),
                 )
             )
 
@@ -1281,17 +1369,80 @@ def evaluate_ngssp(
         and value == 0
     ):
 
+        # ----------------------------------------------------
+        # PENYUSUNAN PEMBACAAN NARATIF
+        # ----------------------------------------------------
+        #
+        # Pembacaan disusun sebagai satu paragraf utuh agar dapat
+        # dibaca langsung oleh operator tanpa perlu menafsirkan
+        # potongan teks alert. Setiap unsur bersifat opsional:
+        # bila suatu informasi tidak berhasil diekstraksi, kalimat
+        # yang bersangkutan tidak disertakan sehingga pembacaan
+        # tetap utuh tanpa bagian kosong.
+
+        sumber = get_fact(facts, "SUMBER")
+        waktu = _waktu_narasi(get_fact(facts, "ISSUE_START"))
+        url = get_fact(facts, "URL")
+
+        bagian = []
+
+        # Kalimat pembuka: apa yang terdeteksi dan di mana.
+        if sumber:
+            bagian.append(
+                f"Sistem pemantauan mendeteksi gangguan pada "
+                f"{sumber}."
+            )
+        else:
+            bagian.append(
+                "Sistem pemantauan mendeteksi gangguan pada "
+                "komponen middleware."
+            )
+
+        # Kalimat inti: penyebab gangguan.
+        inti = (
+            f"Gangguan terjadi karena Managed Server WebLogic "
+            f"({managed_server or component}) "
+        )
+
+        if host_server:
+            inti += f"yang berjalan pada host {host_server} "
+
+        inti += (
+            "tidak lagi berjalan (status DOWN), yang ditunjukkan "
+            "oleh nilai val = 0."
+        )
+
+        bagian.append(inti)
+
+        # Kalimat waktu.
+        if waktu:
+            bagian.append(
+                f"Gangguan pertama kali terdeteksi pada {waktu}."
+            )
+
+        # Kalimat eskalasi.
+        bagian.append(
+            f"Oleh karena itu operator diminta segera "
+            f"menghubungi {team} sebagai penanggung jawab "
+            f"layanan tersebut."
+        )
+
+        # Kalimat verifikasi lanjutan.
+        if url:
+            bagian.append(
+                f"Untuk pemeriksaan lebih lanjut, operator dapat "
+                f"membuka dashboard pemantauan melalui tautan "
+                f"berikut: {url}"
+            )
+
+        pembacaan_naratif = " ".join(bagian)
+
         return {
             "condition":
                 "NGSSP_MANAGED_SERVER_UNAVAILABLE",
 
             "hasil_pembacaan":
-                f"Managed Server {managed_server or component} "
-                + (f"pada host {host_server} " if host_server else "")
-                + f"teridentifikasi tidak berjalan (down) atau "
-                f"tidak tersedia, sehingga layanan aplikasi "
-                f"yang ditangani instance tersebut berpotensi "
-                f"tidak dapat melayani permintaan.",
+                pembacaan_naratif,
 
             "alasan_pembacaan":
                 f"Alert bertipe JVM Managed Server Status "
